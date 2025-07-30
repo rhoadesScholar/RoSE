@@ -8,19 +8,16 @@ import torch
 import torch.nn as nn
 
 
-# def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
-#     leading_dims = x.ndim - freqs_cis.ndim
-#     shape = [1] * leading_dims + list(freqs_cis.shape)
-#     return freqs_cis.view(*shape)
-
-
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
-    ndim = x.ndim
-    assert 0 <= 1 < ndim
-    if freqs_cis.shape == (x.shape[-2], x.shape[-1]):
-        shape = [d if i >= ndim - 2 else 1 for i, d in enumerate(x.shape)]
-    elif freqs_cis.shape == (x.shape[-3], x.shape[-2], x.shape[-1]):
-        shape = [d if i >= ndim - 3 else 1 for i, d in enumerate(x.shape)]
+    leading_dims = x.ndim - freqs_cis.ndim
+    # Only run this check in eager mode; skip during TorchScript
+    if not torch.jit.is_scripting():
+        if not all(xs == fs for xs, fs in zip(x.shape[leading_dims:], freqs_cis.shape)):
+            raise ValueError(
+                f"Cannot reshape frequency matrix of size {freqs_cis.shape} "
+                f"to match token shape of {x.shape[leading_dims:]}"
+            )
+    shape = [1] * leading_dims + list(freqs_cis.shape)
     return freqs_cis.view(*shape)
 
 
@@ -132,9 +129,36 @@ class RoSELayer(nn.Module):
         spacing: Tuple[float, ...],
         grid_shape: Tuple[int, ...],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Reshape q and k for multi-head attention:
+        # [B, N, C] -> [B, N, num_heads, C // num_heads]
+        B, N, C = q.shape
+        q = q.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         ts = init_t_nd(grid_shape, spacing=spacing, dtype=q.dtype)
         for t in ts:
             t = t.to(q.device)
         freqs_cis = self.compute_cis(ts)
 
-        return apply_rotary_emb(q, k, freqs_cis=freqs_cis)
+        q, k = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
+        # Reshape back to [B, N, C]
+        q = q.permute(0, 2, 1, 3).reshape(B, N, C)
+        k = k.permute(0, 2, 1, 3).reshape(B, N, C)
+        return q, k
+
+
+if __name__ == "__main__":
+    # Example usage
+    spatial_dims = 2
+    dim = 64 * 2 * spatial_dims
+    layer = RoSELayer(dim=dim, num_heads=8, spatial_dims=spatial_dims)
+
+    # create grid_shape and spacing based on spatial_dims
+    grid_shape = tuple([10] * spatial_dims)
+    spacing = tuple([1.0] * spatial_dims)
+
+    batch_size, seq_len = 2, int(torch.prod(torch.tensor(grid_shape)))
+    q = torch.randn(batch_size, seq_len, dim)
+    k = torch.randn(batch_size, seq_len, dim)
+
+    q_out, k_out = layer(q, k, spacing, grid_shape)
+    print(q_out.shape, k_out.shape)  # Should match input shapes
