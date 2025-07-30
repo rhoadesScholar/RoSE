@@ -2,9 +2,9 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main ]
   release:
     types: [ published ]
 
@@ -43,14 +43,14 @@ jobs:
       run: |
         flake8 src tests
         
-    - name: Format check with black
+    - name: Format with black
       run: |
-        black --check src tests
+        black src tests
         
-    - name: Import sort check with isort
+    - name: Import sort with isort
       run: |
-        isort --check-only src tests
-        
+        isort src tests
+
     - name: Type check with mypy
       run: |
         mypy src

@@ -1,6 +1,8 @@
 # RoSE
-## PyTorch implementation of Rotary Spatial Embeddings
 
+## Original implementation of Rotary Spatial Embeddings (in PyTorch)
+
+![License](https://img.shields.io/github/license/rhoadesScholar/RoSE)
 [![CI/CD Pipeline](https://github.com/rhoadesScholar/RoSE/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/rhoadesScholar/RoSE/actions/workflows/ci-cd.yml)
 [![codecov](https://codecov.io/gh/rhoadesScholar/RoSE/branch/main/graph/badge.svg)](https://codecov.io/gh/rhoadesScholar/RoSE)
 [![PyPI version](https://badge.fury.io/py/rose-spatial-embeddings.svg)](https://badge.fury.io/py/rose-spatial-embeddings)
