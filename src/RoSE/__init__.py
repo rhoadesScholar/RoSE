@@ -6,6 +6,5 @@ in terms of real world coordinates.
 """
 
 from .rose import RoSELayer
-from .rose_mha import RoSEMultiheadSelfAttention
 
-__all__ = ["RoSELayer", "RoSEMultiheadSelfAttention"]
+__all__ = ["RoSELayer"]

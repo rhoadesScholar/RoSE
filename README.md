@@ -1,13 +1,137 @@
 # RoSE
+## PyTorch implementation of Rotary Spatial Embeddings
 
 [![CI/CD Pipeline](https://github.com/rhoadesScholar/RoSE/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/rhoadesScholar/RoSE/actions/workflows/ci-cd.yml)
 [![codecov](https://codecov.io/gh/rhoadesScholar/RoSE/branch/main/graph/badge.svg)](https://codecov.io/gh/rhoadesScholar/RoSE)
 [![PyPI version](https://badge.fury.io/py/rose-spatial-embeddings.svg)](https://badge.fury.io/py/rose-spatial-embeddings)
 [![Python versions](https://img.shields.io/pypi/pyversions/rose-spatial-embeddings.svg)](https://pypi.org/project/rose-spatial-embeddings/)
 
-PyTorch implementation of Rotary Spatial Embeddings
 
-Rotary Spatial Embeddings (RoSE) extends 2D [Rotary Position Embeddings (RoPE)](https://arxiv.org/abs/2403.13298) to incorporate spatial information in terms of real world coordinates into the embeddings. This is particularly useful for tasks that require understanding of spatial relationships across different scales, such as in microscopy.
+Rotary Spatial Embeddings (RoSE) extends 2D [Rotary Position Embeddings (RoPE)](https://arxiv.org/abs/2403.13298) to incorporate spatial information in terms of real world coordinates into the embeddings. This is particularly useful for tasks that require understanding of spatial relationships across different scales, such as in microscopy. Additionally, RoSE implements isotropic embeddings, providing rotation-equivariance across all dimensions.
+
+# Rotation-equivariant Rotary Spatial Embeddings
+### We extend 2-D Rotary Embeddings with a orthonormal frame.
+
+### 1 Original 2-D RoPE
+
+In two spatial dimensions the original Rotary Positional Embedding draws a single angle  
+$$
+\theta \in [0, 2\pi)
+$$
+and forms the $2\times2$ rotation matrix
+
+$$
+R_\theta \;=\;
+\begin{bmatrix}
+\cos\theta & -\sin\theta\\
+\sin\theta &  \cos\theta
+\end{bmatrix}.
+$$
+
+For each exponentially-spaced magnitude $\operatorname{mag}_k$ it then stores, per axis,
+
+$$
+\bigl[f^{(x)}_k \;\big|\; f^{(y)}_k\bigr] \;=\;
+\operatorname{mag}_k
+\bigl[R_\theta^{\top}\bigr]_{0:2}
+\;=\;
+\operatorname{mag}_k
+\,[\,\cos\theta,\;-\sin\theta \;\big|\; \sin\theta,\;\cos\theta\,].
+$$
+
+When an $(x,y)$ coordinate is encountered at run time the phase for that frequency is
+
+$$
+\phi_k = x\,f^{(x)}_k + y\,f^{(y)}_k
+       = \operatorname{mag}_k\bigl(x\cos\theta+y\sin\theta \;\big|\;
+                                    -x\sin\theta+y\cos\theta\bigr),
+$$
+
+(i.e. the real/imaginary parts of $\operatorname{mag}_k\,(x+iy)\,e^{-i\theta}$).
+
+Importantly, *no rotation is applied to the coordinates themselves; only the stored
+frequency rows are pre-rotated at initialization with a uniformly distributed random angle*. These frequencies are then used to compute the phase at run time, and, optionally, can be learnable parameters.
+
+---
+
+### 2 Generalizing to **D** dimensions via a QR frame
+
+In $D>2$ there is no single angle describing a rotation; instead we sample **one orthonormal matrix**
+
+$$
+R \;\in\; \mathrm{SO}(D)
+\quad\text{(via QR decomposition, once per head).}
+$$
+
+Consider the first two columns
+
+$$(v_0,\;v_1) = (R_{\star,0},\;R_{\star,1}).$$
+
+They span a 2-D plane inside $\mathbb R^{D}$ and are orthonormal by construction,
+perfectly mirroring the rôle of $(\cos\theta,\sin\theta)$ in the 2-D case.
+
+For every spatial axis $i\in\{0,\dots,D-1\}$ we keep the *row* entries
+$(v_{0,i},\,v_{1,i})$:
+
+$$
+\text{real}_{i,k} \;=\; \operatorname{mag}_k\,v_{0,i},
+\quad
+\text{imag}_{i,k} \;=\; \operatorname{mag}_k\,v_{1,i}.
+$$
+
+The phase accumulated at run time is now
+
+$$
+\phi_k = \sum_{i=0}^{D-1} t_i
+         \bigl(\text{real}_{i,k} \;\big|\; \text{imag}_{i,k}\bigr)
+       = \operatorname{mag}_k
+         \bigl(t\!\cdot\!v_0 \;\big|\; t\!\cdot\!v_1\bigr),
+$$
+with $t=(t_0,\dots,t_{D-1})$ the coordinate vector.  
+Thus each frequency again represents the complex number  
+$\operatorname{mag}_k\,(t\!\cdot\!v_0 \;+\; i\,t\!\cdot\!v_1)$ — **equivalent algebra** to the 2-D formula, just in a higher-dimensional plane.
+
+At initialization, the orthonormal frame $R$ for each attention head is sampled from $\mathrm{SO}(D)$, which is a uniform distribution over all rotations in $D$ dimensions, similar to how the angle $\theta$ was sampled in the 2-D case. Again, the frequencies can be learnable parameters, allowing the model to adapt them during training.
+
+---
+
+### 3 Why use an orthonormal frame?
+
+* **Isotropy without extra cost**  
+  The axes of the data can be arbitrarily permuted or rotated; because the
+  frequency lattice was sampled from $\mathrm{SO}(D)$, the attention mechanism
+  sees no privileged “x-axis” or “y-axis”.  This removes an inductive bias that
+  might otherwise hinder learning on
+  volumetric data, point clouds, or molecular coordinates.
+
+* **Head-level diversity**  
+  Sampling a fresh $R$ for each attention head at initialization, and allowing the resulting frequencies to be learnable parameters, supplies
+  *independent* 2-D sub-planes.
+  Heads can therefore specialise in very different directional cues without
+  any run-time overhead.
+
+* **Exact backward-compatibility**  
+  Setting `rotate=False` makes $R$ the identity; the recipe collapses to the
+  classic axis-wise RoPE.
+
+* **Still a single complex multiply**  
+  Because every axis keeps just **two** frequency channels (real and imaginary),
+  we retain the efficient `view_as_complex` implementation strategy—no need for
+  extra tensor reshapes or larger hidden states.
+
+---
+
+### 4 Embedding real-world coordinates
+
+In many applications, such as microscopy or 3D point clouds, the coordinates are not just indices but represent real-world positions that may contain useful spatial information. RoSE allows for injecting these coordinates directly into the rotary embeddings.
+
+---
+
+### 5 Conclusion
+
+The QR‐based initialisation is a drop-in, mathematically faithful extension of the 2-D RoPE idea: one global plane per head, orthonormally embedded inside $\mathbb R^{D}$.  It keeps the computational footprint unchanged while gifting the model rotation-equivariance across all spatial dimensions. The additional ability to inject real-world coordinates makes RoSE particularly powerful for tasks that require understanding exact spatial relationships, such as in microscopy or 3D point clouds.
+
+---
 
 ## Installation
 

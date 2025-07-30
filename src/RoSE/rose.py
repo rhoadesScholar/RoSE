@@ -1,224 +1,140 @@
-import functools
-from typing import Tuple, Dict, Any
+# Adapted from https://github.com/naver-ai/rope-vit/blob/main/self-attn/rope_self_attn.py
+# by @rhoadesScholar 2025
+
+from functools import lru_cache
+from typing import Tuple
 
 import torch
 import torch.nn as nn
-from torch import Tensor
 
 
-# ----------  helpers ---------------------------------------------------------
+# def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
+#     leading_dims = x.ndim - freqs_cis.ndim
+#     shape = [1] * leading_dims + list(freqs_cis.shape)
+#     return freqs_cis.view(*shape)
 
 
-def _make_base_frequencies(
-    dim_half: int,
-    learnable: bool,
-    n_heads: int,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> nn.Parameter | nn.Buffer:
+def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
+    ndim = x.ndim
+    assert 0 <= 1 < ndim
+    if freqs_cis.shape == (x.shape[-2], x.shape[-1]):
+        shape = [d if i >= ndim - 2 else 1 for i, d in enumerate(x.shape)]
+    elif freqs_cis.shape == (x.shape[-3], x.shape[-2], x.shape[-1]):
+        shape = [d if i >= ndim - 3 else 1 for i, d in enumerate(x.shape)]
+    return freqs_cis.view(*shape)
+
+
+def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
+    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    return xq_out.type_as(xq).to(xq.device), xk_out.type_as(xk).to(xk.device)
+
+
+@torch.no_grad()
+def init_nd_freqs(
+    dim: int,
+    num_heads: int,
+    spatial_dims: int,
+    theta: float = 10.0,
+    rotate: bool = True,
+    device=None,
+    dtype=torch.float32,
+):
     """
-    Return a (n_heads, dim_half) tensor of base frequencies θ.
+    Generalized ND version for rotary embedding frequency initialization, using random orthonormal frame
+    Returns  [spatial_dims, num_heads, dim // spatial_dims]
     """
-    freq = 1.0 / (
-        10000 ** (torch.arange(0, dim_half, dtype=dtype, device=device) / dim_half)
-    )
-    freq = freq.unsqueeze(0).repeat(n_heads, 1)  # share across heads
-    if learnable:
-        return nn.Parameter(freq)
-    else:
-        # register_buffer keeps it on the right device & in state_dict (no grad)
-        return nn.Buffer(freq)
+    pair = 2 * spatial_dims
+    if dim % pair:
+        raise ValueError(f"dim must be divisible by 2×spatial_dims = {pair}")
+    num_f = dim // pair  # magnitudes per axis
+    mag = 1 / (theta ** (torch.arange(0, dim, pair)[:num_f].float() / dim))
 
+    freqs = torch.empty(spatial_dims, num_heads, 2 * num_f, device=device, dtype=dtype)
 
-def _rotate_half(x: Tensor) -> Tensor:
-    # x (..., 2k) →  (..., 2k)  where even/odd pairs are rotated
-    x_even, x_odd = x[..., ::2], x[..., 1::2]
-    return torch.stack((-x_odd, x_even), dim=-1).flatten(-2)
-
-
-def _rope_apply(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
-    # x: (B, H, N, D) ;  cos/sin: (N, 1, 1, D/2) after broadcasting
-    x_even, x_odd = x[..., ::2], x[..., 1::2]
-    # expand cos/sin to (..., D/2)
-    return torch.cat([x_even * cos - x_odd * sin, x_even * sin + x_odd * cos], dim=-1)
-
-
-# ----------  cache -----------------------------------------------------------
-
-
-class _RotationCache:
-    """
-    Memoises (cos, sin) tables for each (device, grid_shape, voxel_size, head_dim_half).
-    The key is a tuple
-         (device, grid_shape, voxel_size_tuple, dim_half, dtype)
-    """
-
-    def __init__(self) -> None:
-        self._store: Dict[Tuple[Any, ...], Tuple[Tensor, Tensor]] = {}
-
-    @staticmethod
-    def _build_angles(
-        phys_coords: Tensor, theta: Tensor  # (N, spatial_dims)  # (heads, dim_half)
-    ) -> Tensor:  # → (N, heads, dim_half)
-        # phys_coords = p · s  (already in physical units)
-        # angle = p_phys ⋅ θ   (broadcasted over heads)
-        return torch.einsum("nd,hd->nhd", phys_coords, theta)
-
-    def get(
-        self,
-        grid_shape: Tuple[int, ...],
-        voxel_size: Tuple[float, ...],
-        theta: Tensor,
-        dtype: torch.dtype,
-    ) -> Tuple[Tensor, Tensor]:
-        device = theta.device
-        dim_half = theta.shape[1]
-        key = (device, grid_shape, voxel_size, dim_half, dtype)
-        if key not in self._store:
-
-            # 1. build physical-unit coordinates           (N, spatial_dims)
-            coords = [torch.arange(n, device=device, dtype=dtype) for n in grid_shape]
-            mesh = torch.stack(torch.meshgrid(*coords, indexing="ij"), dim=-1)
-            phys = mesh.reshape(-1, len(grid_shape)) * torch.tensor(
-                voxel_size, device=device, dtype=dtype
+    for h in range(num_heads):
+        if rotate:
+            # one orthonormal frame R ∈ SO(D)
+            A, _ = torch.linalg.qr(
+                torch.randn(spatial_dims, spatial_dims, device=device, dtype=dtype)
             )
+            if torch.det(A) < 0:
+                A[:, 0].neg_()
+        else:
+            A = torch.eye(spatial_dims, device=device, dtype=dtype)
 
-            # 2. angles and trig caches
-            angle = self._build_angles(phys, theta.to(dtype))  # (N, H, D/2)
-            cos = angle.cos()
-            sin = angle.sin()
+        # first two columns of A give cos & sin directions
+        freqs[:, h, :num_f] = mag * A[:, 0:1]  # real
+        freqs[:, h, num_f:] = mag * A[:, 1:2]  # imag
 
-            # 3. reshape to   (N, 1, 1, D/2)   for cheap broadcasting later
-            cos = cos.permute(0, 2, 1).reshape(-1, 1, 1, dim_half)
-            sin = sin.permute(0, 2, 1).reshape(-1, 1, 1, dim_half)
-
-            self._store[key] = (cos, sin)
-
-        return self._store[key]
+    return freqs
 
 
-_ROSE_CACHE = _RotationCache()
+@lru_cache(maxsize=128)
+@torch.no_grad()
+def init_t_nd(dims, spacing=(1.0, 1.0), dtype=torch.float32):
+    t = torch.arange(int(torch.prod(torch.tensor(dims))), device="cpu")
+    idxs = torch.unravel_index(t, dims)
+    return tuple((i * s).to(dtype) for i, s in zip(idxs, spacing))
 
 
 class RoSELayer(nn.Module):
-    """
-    Applies **Rotary Spatial Embeddings** to q & k.
-
-    Args
-    ----
-    dim : total embedding dim (must be divisible by num_heads)
-    num_heads : number of attention heads
-    spatial_dims : 1, 2, or 3
-    learnable : if True, θ spectrum is learnable per head
-    """
+    """Layer to apply RoSE (Rotary Spatial Embeddings) to query and key tensors."""
 
     def __init__(
-        self, dim: int, num_heads: int, spatial_dims: int = 3, learnable: bool = True
-    ) -> None:
+        self,
+        dim: int,
+        num_heads: int,
+        spatial_dims: int = 2,
+        rope_theta=10.0,
+        learnable: bool = True,
+    ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.dim = dim
         self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.dim_half = self.head_dim // 2
         self.spatial_dims = spatial_dims
+        self.rope_theta = rope_theta
+        self.learnable = learnable
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=False)
-        self.proj = nn.Linear(dim, dim)
+        freqs = init_nd_freqs(
+            dim=self.dim // self.num_heads,
+            num_heads=self.num_heads,
+            spatial_dims=spatial_dims,
+            theta=rope_theta,
+            rotate=True,
+        ).view(2, -1)
+        self.freqs = nn.Parameter(freqs, requires_grad=learnable)
 
-        # θ frequencies  (H, D/2)
-        self.theta = _make_base_frequencies(
-            self.dim_half,
-            learnable,
-            num_heads,
-            device=torch.device("cpu"),
-            dtype=torch.float32,
-        )
-
-    @functools.lru_cache(maxsize=128)
-    @torch.no_grad()
-    def get_grid_centers(self, shape):
-        """
-        shape: (H, W) or (D, H, W)
-        Returns: Centers of the grid of patches
-            --> [N_patches, spatial_dims]
-        """
-        # Get the center of each patch
-        grid_centers = [
-            (
-                torch.arange(
-                    self.patch_size[i] / 2,
-                    shape[i],
-                    step=self.patch_size[i],
-                )
-                if shape[i] > 1
-                else torch.tensor([0.0])
-            )
-            for i in range(self.spatial_dims)
-        ]
-        grid_centers = torch.stack(
-            torch.meshgrid(*grid_centers, indexing="ij"), dim=-1
-        ).reshape(-1, self.spatial_dims)
-        # Center around the origin
-        grid_centers -= torch.tensor(shape) / 2.0
-
-        _param = next(self.mlp.parameters())
-        return grid_centers.to(dtype=_param.dtype, device=_param.device)
-
-    @functools.lru_cache(maxsize=128)
-    @torch.no_grad()
-    def get_scaled_centers(self, shape, scale: torch.Tensor):
-        """
-        shape: (H, W) or (D, H, W)
-        Returns: [N_patches, *spatial_dims]
-        """
-        # Get the center of each patch in the grid
-        grid_centers = self.get_grid_centers(shape)
-        return grid_centers * scale.to(
-            dtype=grid_centers.dtype, device=grid_centers.device
-        )
-
-    @functools.lru_cache(maxsize=128)
-    @torch.no_grad()
-    def get_real_centers(self, shape, scale, center=None):
-        """
-        shape: (H, W) or (D, H, W)
-        scale: (s_y, s_x) or (s_z, s_y, s_x)
-        center: (c_y, c_x) or (c_z, c_y, c_x), defaults to (0, 0) or (0, 0, 0)
-        Returns: [N_patches, *spatial_dims]
-        """
-        if center is None:
-            center = torch.zeros(self.spatial_dims)
-        elif not isinstance(center, torch.Tensor):
-            center = torch.tensor(center)
-
-        # Get the center of each patch in the grid
-        scaled_centers = self.get_scaled_centers(shape, scale)
-        return scaled_centers + center.to(
-            dtype=scaled_centers.dtype, device=scaled_centers.device
-        )
+    def compute_cis(self, ts: Tuple[torch.Tensor, torch.Tensor]):
+        N = ts[0].shape[0]  # Number of points in the grid
+        # No float 16 for this range
+        with torch.amp.autocast("cuda", enabled=False):
+            freqs = torch.stack(
+                [
+                    (t.unsqueeze(-1) @ f.unsqueeze(-2))
+                    .view(N, self.num_heads, -1)
+                    .permute(1, 0, 2)
+                    for t, f in zip(ts, self.freqs)
+                ],
+                dim=-1,
+            ).sum(dim=-1)
+            freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+        return freqs_cis
 
     def forward(
         self,
-        q: Tensor,  # (B, N, C)
-        k: Tensor,  # (B, N, C)
+        q: torch.Tensor,
+        k: torch.Tensor,
+        spacing: Tuple[float, ...],
         grid_shape: Tuple[int, ...],
-        voxel_size: Tuple[float, ...],
-    ) -> Tuple[Tensor, Tensor]:
-        assert (
-            len(grid_shape) == self.spatial_dims
-        ), f"grid_shape must have {self.spatial_dims} dims"
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        ts = init_t_nd(grid_shape, spacing=spacing, dtype=q.dtype)
+        for t in ts:
+            t = t.to(q.device)
+        freqs_cis = self.compute_cis(ts)
 
-        # ---  retrieve / build trig tables
-        cos, sin = _ROSE_CACHE.get(
-            grid_shape, voxel_size, self.theta, dtype=q.dtype
-        )  # (N,1,1,D/2)
-
-        # cos/sin: broadcast to (N, B, H, D/2) by unsqueezing properly
-        cos = cos.to(q.device)
-        sin = sin.to(q.device)
-
-        q = _rope_apply(q, cos, sin)
-        k = _rope_apply(k, cos, sin)
-
-        return q, k
+        return apply_rotary_emb(q, k, freqs_cis=freqs_cis)

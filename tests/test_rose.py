@@ -3,103 +3,66 @@
 import pytest
 import torch
 
-from RoSE import RoSELayer, RoSEMultiheadSelfAttention
+from RoSE import RoSELayer
 
 
 class TestRoSELayer:
     """Test cases for RoSELayer."""
-    
-    def test_rose_layer_init(self):
-        """Test RoSELayer initialization."""
-        layer = RoSELayer(dim=128, num_heads=8, spatial_dims=3, learnable=True)
-        assert layer.dim == 128
-        assert layer.num_heads == 8
-        assert layer.head_dim == 16
-        assert layer.spatial_dims == 3
-    
-    def test_rose_layer_forward(self):
-        """Test RoSELayer forward pass."""
-        layer = RoSELayer(dim=128, num_heads=8, spatial_dims=3, learnable=True)
-        
-        batch_size, seq_len = 2, 100
-        q = torch.randn(batch_size, seq_len, 128)
-        k = torch.randn(batch_size, seq_len, 128)
-        
-        grid_shape = (10, 10, 10)
-        voxel_size = (1.0, 1.0, 1.0)
-        
-        q_out, k_out = layer(q, k, grid_shape, voxel_size)
-        
+
+    @pytest.mark.parametrize(
+        "spatial_dims, learnable",
+        [
+            (2, True),
+            (2, False),
+            (3, True),
+            (3, False),
+        ],
+    )
+    def test_rose_layer_init(self, spatial_dims, learnable):
+        """Test RoSELayer initialization for various spatial dimensions and learnability."""
+        dim = 64 * 2 * spatial_dims  # Ensure dim is divisible by num_heads
+        num_heads = 8
+        layer = RoSELayer(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=learnable
+        )
+        assert layer.dim == dim
+        assert layer.num_heads == num_heads
+        assert layer.spatial_dims == spatial_dims
+        assert layer.learnable == learnable
+
+    @pytest.mark.parametrize(
+        "spatial_dims, learnable",
+        [
+            (2, True),
+            (2, False),
+            (3, True),
+            (3, False),
+        ],
+    )
+    def test_rose_layer_forward(self, spatial_dims, learnable):
+        """Test RoSELayer forward pass for 2D/3D and learnable/non-learnable."""
+        dim = 64 * 2 * spatial_dims  # Ensure dim is divisible by num_heads
+        num_heads = 8
+        layer = RoSELayer(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=learnable
+        )
+
+        # create grid_shape and voxel_size based on spatial_dims
+        grid_shape = tuple([10] * spatial_dims)
+        voxel_size = tuple([1.0] * spatial_dims)
+
+        # Example batch size and sequence length including CLS token
+        batch_size, seq_len = 2, int(torch.prod(torch.tensor(grid_shape)))
+        q = torch.randn(batch_size, seq_len, dim)
+        k = torch.randn(batch_size, seq_len, dim)
+
+        # Forward pass
+        q_out, k_out = layer(q, k, voxel_size, grid_shape)
+
         assert q_out.shape == q.shape
         assert k_out.shape == k.shape
-    
+
     def test_dim_not_divisible_by_heads(self):
         """Test that initialization fails when dim is not divisible by num_heads."""
         with pytest.raises(AssertionError):
             RoSELayer(dim=129, num_heads=8)
-
-
-class TestRoSEMultiheadSelfAttention:
-    """Test cases for RoSEMultiheadSelfAttention."""
-    
-    def test_rose_mha_init(self):
-        """Test RoSEMultiheadSelfAttention initialization."""
-        mha = RoSEMultiheadSelfAttention(dim=128, num_heads=8, spatial_dims=3, learnable=True)
-        assert mha.dim == 128
-        assert mha.num_heads == 8
-        assert mha.head_dim == 16
-        assert mha.spatial_dims == 3
-    
-    def test_rose_mha_forward(self):
-        """Test RoSEMultiheadSelfAttention forward pass."""
-        mha = RoSEMultiheadSelfAttention(dim=128, num_heads=8, spatial_dims=3, learnable=True)
-        
-        batch_size, seq_len = 2, 100
-        x = torch.randn(batch_size, seq_len, 128)
-        
-        grid_shape = (10, 10, 10)
-        voxel_size = (1.0, 1.0, 1.0)
-        
-        output = mha(x, grid_shape, voxel_size)
-        
-        assert output.shape == x.shape
-    
-    def test_different_spatial_dims(self):
-        """Test with different spatial dimensions."""
-        # Test 2D
-        mha_2d = RoSEMultiheadSelfAttention(dim=128, num_heads=8, spatial_dims=2)
-        x = torch.randn(2, 100, 128)
-        grid_shape = (10, 10)
-        voxel_size = (1.0, 1.0)
-        
-        output = mha_2d(x, grid_shape, voxel_size)
-        assert output.shape == x.shape
-        
-        # Test 1D
-        mha_1d = RoSEMultiheadSelfAttention(dim=128, num_heads=8, spatial_dims=1)
-        grid_shape = (100,)
-        voxel_size = (1.0,)
-        
-        output = mha_1d(x, grid_shape, voxel_size)
-        assert output.shape == x.shape
-
-
-@pytest.mark.slow
-class TestRoSEPerformance:
-    """Performance and integration tests."""
-    
-    def test_large_batch_processing(self):
-        """Test processing with larger batch sizes."""
-        layer = RoSELayer(dim=256, num_heads=16, spatial_dims=3)
-        
-        batch_size, seq_len = 8, 1000
-        q = torch.randn(batch_size, seq_len, 256)
-        k = torch.randn(batch_size, seq_len, 256)
-        
-        grid_shape = (10, 10, 10)
-        voxel_size = (0.5, 0.5, 0.5)
-        
-        q_out, k_out = layer(q, k, grid_shape, voxel_size)
-        
-        assert q_out.shape == q.shape
-        assert k_out.shape == k.shape
