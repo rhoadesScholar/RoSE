@@ -74,8 +74,8 @@ source = "vcs"
 tag-pattern = "v(?P<version>.*)"
 
 [tool.hatch.version.raw-options]
-# Use calver format: YYYY.MM.DD
-version_scheme = "calver-by-date"
+# Use calver format with full 4-digit year: YYYY.MM.DD
+version_scheme = "calver"
 local_scheme = "dirty-tag"
 
 [tool.hatch.build.targets.wheel]
