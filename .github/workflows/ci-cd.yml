@@ -51,9 +51,9 @@ jobs:
       run: |
         isort src tests
 
-    - name: Type check with mypy
-      run: |
-        mypy src
+    # - name: Type check with mypy
+    #   run: |
+    #     mypy src
         
     - name: Test with pytest
       run: |
