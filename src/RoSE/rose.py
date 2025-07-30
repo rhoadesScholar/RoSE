@@ -2,6 +2,7 @@
 # by @rhoadesScholar 2025
 
 from functools import lru_cache
+import math
 from typing import Tuple
 
 import torch
@@ -135,8 +136,7 @@ class RoSELayer(nn.Module):
         q = q.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         k = k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         ts = init_t_nd(grid_shape, spacing=spacing, dtype=q.dtype)
-        for t in ts:
-            t = t.to(q.device)
+        ts = tuple(t.to(q.device) for t in ts)
         freqs_cis = self.compute_cis(ts)
 
         q, k = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
@@ -156,9 +156,18 @@ if __name__ == "__main__":
     grid_shape = tuple([10] * spatial_dims)
     spacing = tuple([1.0] * spatial_dims)
 
-    batch_size, seq_len = 2, int(torch.prod(torch.tensor(grid_shape)))
+    batch_size, seq_len = 2, math.prod(grid_shape)
     q = torch.randn(batch_size, seq_len, dim)
     k = torch.randn(batch_size, seq_len, dim)
 
     q_out, k_out = layer(q, k, spacing, grid_shape)
-    print(q_out.shape, k_out.shape)  # Should match input shapes
+    assert q_out.shape == (
+        batch_size,
+        seq_len,
+        dim,
+    ), f"Expected q_out shape {(batch_size, seq_len, dim)}, got {q_out.shape}"
+    assert k_out.shape == (
+        batch_size,
+        seq_len,
+        dim,
+    ), f"Expected k_out shape {(batch_size, seq_len, dim)}, got {k_out.shape}"
