@@ -3,11 +3,11 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "rose-spatial-embeddings"
+name = "rotary-spatial-embeddings"
 dynamic = ["version"]
 description = "PyTorch implementation of Rotary Spatial Embeddings"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = { text = "BSD 3-Clause License" }
 authors = [
     { name = "Jeff Rhoades", email = "rhoadesj@hhmi.org" },
 ]
@@ -70,16 +70,9 @@ Issues = "https://github.com/rhoadesScholar/RoSE/issues"
 # Versioning configuration using hatch-vcs for date-based versioning
 [tool.hatch.version]
 source = "vcs"
-# Date-based versioning: YYYY.MM.DD[.devN+gHASH]
-tag-pattern = "v(?P<version>.*)"
-
-[tool.hatch.version.raw-options]
-# Use calver format with full 4-digit year: YYYY.MM.DD
-version_scheme = "calver"
-local_scheme = "dirty-tag"
 
 [tool.hatch.build.targets.wheel]
-package = ["src/RoSE"]
+packages = ["src/RoSE"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
@@ -113,7 +106,7 @@ markers = [
 
 # Coverage configuration
 [tool.coverage.run]
-source = ["src"]
+source = ["RoSE"]
 branch = true
 omit = [
     "*/tests/*",

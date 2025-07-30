@@ -8,7 +8,7 @@ in terms of real world coordinates.
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("RoSE")
+    __version__ = version("rotary-spatial-embeddings")
 except PackageNotFoundError:
     __version__ = "0.1.1"
 
