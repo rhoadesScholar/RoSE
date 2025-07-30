@@ -16,14 +16,10 @@ Rotary Spatial Embeddings (RoSE) extends 2D [Rotary Position Embeddings (RoPE)](
 
 ### 1 Original 2-D RoPE
 
-In two spatial dimensions the original Rotary Positional Embedding draws a single angle  
-$$
-\theta \in [0, 2\pi)
-$$
-and forms the $2\times2$ rotation matrix
+In two spatial dimensions the original Rotary Positional Embedding draws a single angle $ \theta \in [0, 2\pi) $ and forms the $2\times2$ rotation matrix
 
 $$
-R_\theta \;=\;
+R_\theta \text{ }=\text{ }
 \begin{bmatrix}
 \cos\theta & -\sin\theta\\
 \sin\theta &  \cos\theta
@@ -33,23 +29,23 @@ $$
 For each exponentially-spaced magnitude $\mathrm{mag}_k$ it then stores, per axis,
 
 $$
-\bigl[f^{(x)}_k \;\big|\; f^{(y)}_k\bigr] \;=\;
+\bigl[f^{(x)}_k \text{ }\big|\text{ } f^{(y)}_k\bigr] \text{ }=\text{ }
 \mathrm{mag}_k
 \bigl[R_\theta^{\top}\bigr]_{0:2}
-\;=\;
+\text{ }=\text{ }
 \mathrm{mag}_k
-\,[\,\cos\theta,\;-\sin\theta \;\big|\; \sin\theta,\;\cos\theta\,].
+\text{ }[\text{ }\cos\theta,\text{ }-\sin\theta \text{ }\big|\text{ } \sin\theta,\text{ }\cos\theta\text{ }].
 $$
 
 When an $(x,y)$ coordinate is encountered at run time the phase for that frequency is
 
 $$
-\phi_k = x\,f^{(x)}_k + y\,f^{(y)}_k
-       = \mathrm{mag}_k\bigl(x\cos\theta+y\sin\theta \;\big|\;
+\phi_k = x\text{ }f^{(x)}_k + y\text{ }f^{(y)}_k
+       = \mathrm{mag}_k\bigl(x\cos\theta+y\sin\theta \text{ }\big|\text{ }
                                     -x\sin\theta+y\cos\theta\bigr),
 $$
 
-(i.e. the real/imaginary parts of $\mathrm{mag}_k\,(x+iy)\,e^{-i\theta}$).
+(i.e. the real/imaginary parts of $\mathrm{mag}_k\text{ }(x+iy)\text{ }e^{-i\theta}$).
 
 Importantly, *no rotation is applied to the coordinates themselves; only the stored
 frequency rows are pre-rotated at initialization with a uniformly distributed random angle*. These frequencies are then used to compute the phase at run time, and, optionally, can be learnable parameters.
@@ -61,37 +57,37 @@ frequency rows are pre-rotated at initialization with a uniformly distributed ra
 In $D>2$ there is no single angle describing a rotation; instead we sample **one orthonormal matrix**
 
 $$
-R \;\in\; \mathrm{SO}(D)
+R \text{ }\in\text{ } \mathrm{SO}(D)
 \quad\text{(via QR decomposition, once per head).}
 $$
 
 Consider the first two columns
 
-$$(v_0,\;v_1) = (R_{\star,0},\;R_{\star,1}).$$
+$$(v_0,\text{ }v_1) = (R_{\star,0},\text{ }R_{\star,1}).$$
 
 They span a 2-D plane inside $\mathbb R^{D}$ and are orthonormal by construction,
 perfectly mirroring the rôle of $(\cos\theta,\sin\theta)$ in the 2-D case.
 
 For every spatial axis $i\in\{0,\dots,D-1\}$ we keep the *row* entries
-$(v_{0,i},\,v_{1,i})$:
+$(v_{0,i},\text{ }v_{1,i})$:
 
 $$
-\text{real}_{i,k} \;=\; \mathrm{mag}_k\,v_{0,i},
+\text{real}_{i,k} \text{ }=\text{ } \mathrm{mag}_k\text{ }v_{0,i},
 \quad
-\text{imag}_{i,k} \;=\; \mathrm{mag}_k\,v_{1,i}.
+\text{imag}_{i,k} \text{ }=\text{ } \mathrm{mag}_k\text{ }v_{1,i}.
 $$
 
 The phase accumulated at run time is now
 
 $$
 \phi_k = \sum_{i=0}^{D-1} t_i
-         \bigl(\text{real}_{i,k} \;\big|\; \text{imag}_{i,k}\bigr)
+         \bigl(\text{real}_{i,k} \text{ }\big|\text{ } \text{imag}_{i,k}\bigr)
        = \mathrm{mag}_k
-         \bigl(t\!\cdot\!v_0 \;\big|\; t\!\cdot\!v_1\bigr),
+         \bigl(t\!\cdot\!v_0 \text{ }\big|\text{ } t\!\cdot\!v_1\bigr),
 $$
 with $t=(t_0,\dots,t_{D-1})$ the coordinate vector.  
 Thus each frequency again represents the complex number  
-$\mathrm{mag}_k\,(t\cdot v_0 + i\,t\cdot v_1)$ — **equivalent algebra** to the 2-D formula, just in a higher-dimensional plane.
+$\mathrm{mag}_k\text{ }(t\cdot v_0 + i\text{ }t\cdot v_1)$ — **equivalent algebra** to the 2-D formula, just in a higher-dimensional plane.
 
 At initialization, the orthonormal frame $R$ for each attention head is sampled from $\mathrm{SO}(D)$, which is a uniform distribution over all rotations in $D$ dimensions, similar to how the angle $\theta$ was sampled in the 2-D case. Again, the frequencies can be learnable parameters, allowing the model to adapt them during training.
 
