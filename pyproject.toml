@@ -9,10 +9,10 @@ description = "PyTorch implementation of Rotary Spatial Embeddings"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Jeff Rhoades", email = "jeff@example.com" },
+    { name = "Jeff Rhoades", email = "rhoadesj@hhmi.org" },
 ]
 maintainers = [
-    { name = "Jeff Rhoades", email = "jeff@example.com" },
+    { name = "Jeff Rhoades", email = "rhoadesj@hhmi.org" },
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -79,7 +79,7 @@ version_scheme = "calver"
 local_scheme = "dirty-tag"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/RoSE"]
+package = ["src/RoSE"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [

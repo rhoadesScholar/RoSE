@@ -5,6 +5,16 @@ extending 2D Rotary Position Embeddings (RoPE) to incorporate spatial informatio
 in terms of real world coordinates.
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("RoSE")
+except PackageNotFoundError:
+    __version__ = "0.1.1"
+
+__author__ = "Jeff Rhoades"
+__email__ = "rhoadesj@hhmi.org"
+
 from .rose import (
     RoSELayer,
     apply_rotary_emb,
@@ -14,19 +24,12 @@ from .rose import (
 )
 
 __all__ = [
+    "__version__",
+    "__author__",
+    "__email__",
     "RoSELayer",
     "apply_rotary_emb",
     "reshape_for_broadcast",
     "init_nd_freqs",
     "init_t_nd",
 ]
-
-try:
-    from importlib.metadata import version, PackageNotFoundError
-except ImportError:
-    from importlib_metadata import version, PackageNotFoundError
-
-try:
-    __version__ = version("rose-spatial-embeddings")
-except PackageNotFoundError:
-    __version__ = "0.0.0"
