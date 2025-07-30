@@ -55,44 +55,45 @@ frequency rows are pre-rotated at initialization with a uniformly distributed ra
 
 ### 2 Generalizing to **D** dimensions via a QR frame
 
-In $D>2$ there is no single angle describing a rotation; instead we sample **one orthonormal matrix**
+In $D>2$ spatial dimensions, we need to maintain orthogonality between all frequency components while preserving the complex structure of rotary embeddings. For $D$ spatial dimensions, we require $2D$ orthogonal vectors: $D$ for real parts and $D$ for imaginary parts.
+
+We sample **one orthonormal matrix** of size $(2D \times 2D)$:
 
 ```math
-R \;\in\; \mathrm{SO}(D)
+A \;\in\; \mathrm{SO}(2D)
 \quad\text{(via QR decomposition, once per head).}
 ```
 
-Consider the first two columns
+From this matrix, we extract $D$ pairs of orthogonal columns. For spatial dimension $i \in \{0, 1, \ldots, D-1\}$, we use columns $(2i, 2i+1)$ as the orthogonal basis pair:
 
 ```math
-(v_0,\;v_1) = (R_{\star,0},\;R_{\star,1}).
+(v_{i,0},\;v_{i,1}) = (A_{\star,2i},\;A_{\star,2i+1})
 ```
 
-They span a 2-D plane inside $\mathbb R^{D}$ and are orthonormal by construction,
-perfectly mirroring the rôle of $(\cos\theta,\sin\theta)$ in the 2-D case.
+Each pair $(v_{i,0}, v_{i,1})$ represents the real and imaginary frequency directions for spatial dimension $i$, and all $2D$ vectors are mutually orthogonal by construction.
 
-For every spatial axis $i\in\{0,\dots,D-1\}$ we keep the *row* entries
-$(v_{0,i},\,v_{1,i})$:
+For every frequency $k$ and spatial dimension $i$, we store:
 
 ```math
-\text{real}_{i,k} \;=\; \mathrm{mag}_k\,v_{0,i},
-\quad
-\text{imag}_{i,k} \;=\; \mathrm{mag}_k\,v_{1,i}.
+\text{real}_{i,k} \;=\; \mathrm{mag}_k \cdot v_{i,0}[i], \quad
+\text{imag}_{i,k} \;=\; \mathrm{mag}_k \cdot v_{i,1}[i]
 ```
 
-The phase accumulated at run time is now
+where $v_{i,0}[i]$ denotes the $i$-th component of the $2D$-dimensional vector $v_{i,0}$.
+
+The phase accumulated at run time is:
 
 ```math
-\phi_k = \sum_{i=0}^{D-1} t_i
-         \bigl(\text{real}_{i,k} \;\big|\; \text{imag}_{i,k}\bigr)
-       = \mathrm{mag}_k
-         \bigl(t\!\cdot\!v_0 \;\big|\; t\!\cdot\!v_1\bigr),
+\phi_k = \sum_{i=0}^{D-1} t_i \left(\text{real}_{i,k} + i \cdot \text{imag}_{i,k}\right)
 ```
-with $t=(t_0,\dots,t_{D-1})$ the coordinate vector.  
-Thus each frequency again represents the complex number  
-$\mathrm{mag}_k\,(t\!\cdot\!v_0 \;+\; i\,t\!\cdot\!v_1)$ — **equivalent algebra** to the 2-D formula, just in a higher-dimensional plane.
 
-At initialization, the orthonormal frame $R$ for each attention head is sampled from $\mathrm{SO}(D)$, which is a uniform distribution over all rotations in $D$ dimensions, similar to how the angle $\theta$ was sampled in the 2-D case. Again, the frequencies can be learnable parameters, allowing the model to adapt them during training.
+with $t=(t_0,\dots,t_{D-1})$ the coordinate vector.
+
+This approach ensures that:
+- All frequency components remain orthogonal across all spatial dimensions
+- The complex structure necessary for rotation equivariance is preserved
+- Each spatial dimension has its own independent real/imaginary basis pair
+- The geometric relationships are maintained under coordinate rotations
 
 ---
 
@@ -168,10 +169,6 @@ voxel_size = (1.0, 1.0, 1.0)  # Physical size of each voxel
 # Apply rotary spatial embeddings
 q_rot, k_rot = layer(q, k, grid_shape, voxel_size)
 
-# Complete multihead self-attention with RoSE
-mha = RoSEMultiheadSelfAttention(dim=128, num_heads=8, spatial_dims=3)
-x = torch.randn(batch_size, seq_len, 128)
-output = mha(x, grid_shape, voxel_size)
 ```
 
 
