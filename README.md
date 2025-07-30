@@ -27,14 +27,14 @@ R_\theta \;=\;
 \end{bmatrix}.
 ```
 
-For each exponentially-spaced magnitude $\operatorname{mag}_k$ it then stores, per axis,
+For each exponentially-spaced magnitude $\mathrm{mag}_k$ it then stores, per axis,
 
 ```math
 \bigl[f^{(x)}_k \;\big|\; f^{(y)}_k\bigr] \;=\;
-\operatorname{mag}_k
+\mathrm{mag}_k
 \bigl[R_\theta^{\top}\bigr]_{0:2}
 \;=\;
-\operatorname{mag}_k
+\mathrm{mag}_k
 \,[\,\cos\theta,\;-\sin\theta \;\big|\; \sin\theta,\;\cos\theta\,].
 ```
 
@@ -42,11 +42,11 @@ When an $(x,y)$ coordinate is encountered at run time the phase for that frequen
 
 ```math
 \phi_k = x\,f^{(x)}_k + y\,f^{(y)}_k
-       = \operatorname{mag}_k\bigl(x\cos\theta+y\sin\theta \;\big|\;
+       = \mathrm{mag}_k\bigl(x\cos\theta+y\sin\theta \;\big|\;
                                     -x\sin\theta+y\cos\theta\bigr),
 ```
 
-(i.e. the real/imaginary parts of $\operatorname{mag}_k\,(x+iy)\,e^{-i\theta}$).
+(i.e. the real/imaginary parts of $\mathrm{mag}_k\,(x+iy)\,e^{-i\theta}$).
 
 Importantly, *no rotation is applied to the coordinates themselves; only the stored
 frequency rows are pre-rotated at initialization with a uniformly distributed random angle*. These frequencies are then used to compute the phase at run time, and, optionally, can be learnable parameters.
@@ -75,9 +75,9 @@ For every spatial axis $i\in\{0,\dots,D-1\}$ we keep the *row* entries
 $(v_{0,i},\,v_{1,i})$:
 
 ```math
-\text{real}_{i,k} \;=\; \operatorname{mag}_k\,v_{0,i},
+\text{real}_{i,k} \;=\; \mathrm{mag}_k\,v_{0,i},
 \quad
-\text{imag}_{i,k} \;=\; \operatorname{mag}_k\,v_{1,i}.
+\text{imag}_{i,k} \;=\; \mathrm{mag}_k\,v_{1,i}.
 ```
 
 The phase accumulated at run time is now
@@ -85,12 +85,12 @@ The phase accumulated at run time is now
 ```math
 \phi_k = \sum_{i=0}^{D-1} t_i
          \bigl(\text{real}_{i,k} \;\big|\; \text{imag}_{i,k}\bigr)
-       = \operatorname{mag}_k
+       = \mathrm{mag}_k
          \bigl(t\!\cdot\!v_0 \;\big|\; t\!\cdot\!v_1\bigr),
 ```
 with $t=(t_0,\dots,t_{D-1})$ the coordinate vector.  
 Thus each frequency again represents the complex number  
-$\operatorname{mag}_k\,(t\!\cdot\!v_0 \;+\; i\,t\!\cdot\!v_1)$ — **equivalent algebra** to the 2-D formula, just in a higher-dimensional plane.
+$\mathrm{mag}_k\,(t\!\cdot\!v_0 \;+\; i\,t\!\cdot\!v_1)$ — **equivalent algebra** to the 2-D formula, just in a higher-dimensional plane.
 
 At initialization, the orthonormal frame $R$ for each attention head is sampled from $\mathrm{SO}(D)$, which is a uniform distribution over all rotations in $D$ dimensions, similar to how the angle $\theta$ was sampled in the 2-D case. Again, the frequencies can be learnable parameters, allowing the model to adapt them during training.
 
