@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use RoSE in your research, please cite it as below."
+title: "RoSE: Rotary Spatial Embeddings"
+authors:
+  - family-names: Rhoades
+    given-names: Jeff
+    orcid: https://orcid.org/0000-0001-5077-2533
+version: 0.1.0
+date-released: 2024-07-01
+# doi: 10.5281/zenodo.1234567  # optional, if you have a Zenodo DOI
+repository-code: https://github.com/rhoadesScholar/RoSE
+license: BSD-3-Clause

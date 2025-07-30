@@ -100,6 +100,15 @@ jobs:
           minute=$(date -u +'%M' | sed 's/^0*//')
           tag="$year.$month.$day.$hour$minute"
           echo "tag=$tag" >> $GITHUB_OUTPUT
+      - name: Update CITATION.cff version and date-released
+        run: |
+          tag=${{ steps.date_tag.outputs.tag }}
+          date=$(date -u +"%Y-%m-%d")
+          sed -i.bak -E "s/^version: .*/version: ${tag}/" CITATION.cff
+          sed -i.bak -E "s/^date-released: .*/date-released: ${date}/" CITATION.cff
+          rm CITATION.cff.bak
+          git add CITATION.cff
+          git commit -m "Update CITATION.cff for version ${tag}"
       - name: Create and push tag
         run: |
           git tag ${{ steps.date_tag.outputs.tag }}
