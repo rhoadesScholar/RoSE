@@ -4,10 +4,10 @@ Pre-commit hook to update version in CITATION.cff before commit.
 This ensures the version is updated automatically when committing to main.
 """
 
-import os
-import sys
-import subprocess
 from datetime import datetime, timezone
+import os
+import subprocess
+import sys
 
 
 def get_current_branch():
@@ -94,7 +94,7 @@ def main():
         if result.returncode == 0 and "[skip ci]" in result.stdout:
             print("Found [skip ci] in commit message, skipping version update")
             return 0
-    except:
+    except Exception:
         pass  # No existing commit, continue
 
     # Generate new version
