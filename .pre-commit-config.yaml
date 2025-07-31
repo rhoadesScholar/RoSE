@@ -33,3 +33,13 @@ repos:
       - id: mypy
         additional_dependencies: [torch]
         args: [--strict]
+
+  - repo: local
+    hooks:
+      - id: update-version
+        name: Update version in CITATION.cff
+        entry: .pre-commit-hooks/update-version.py
+        language: python3
+        stages: [commit]
+        pass_filenames: false
+        always_run: true

@@ -45,24 +45,6 @@ jobs:
       run: |
         isort src tests
 
-    # - name: Type check with mypy
-    #   run: |
-    #     mypy src        
-    - name: Commit and push formatting changes
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-
-        # Commit only when black/isort actually changed files
-        if ! git diff --quiet; then
-          git add .
-          git commit -m "ci: apply black/isort formatting [skip ci]"
-          git push
-        else
-          echo "No formatting changes to commit"
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   test:
     name: ${{ matrix.platform }} (${{ matrix.python-version }})
     runs-on: ${{ matrix.platform }}
@@ -98,49 +80,35 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.date_tag.outputs.tag }}
+      tag: ${{ steps.get_tag.outputs.tag }}
     if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Set up Git user
+      - name: Get version from CITATION.cff
+        id: get_tag
+        run: |
+          tag=$(grep '^version:' CITATION.cff | sed 's/version: //')
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+          echo "Found version: $tag"
+      - name: Check if tag already exists
+        run: |
+          if git rev-parse "${{ steps.get_tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.get_tag.outputs.tag }} already exists, skipping release"
+            exit 1
+          fi
+      - name: Create and push tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      - name: Get PEP440 date tag
-        id: date_tag
-        run: |
-          year=$(date -u +'%Y' | sed 's/^0*//')
-          month=$(date -u +'%m' | sed 's/^0*//')
-          day=$(date -u +'%d' | sed 's/^0*//')
-          hour=$(date -u +'%H' | sed 's/^0*//')
-          minute=$(date -u +'%M' | sed 's/^0*//')
-          tag="$year.$month.$day.$hour$minute"
-          echo "tag=$tag" >> $GITHUB_OUTPUT
-      - name: Update CITATION.cff version and date-released
-        run: |
-          tag=${{ steps.date_tag.outputs.tag }}
-          date=$(date -u +"%Y-%m-%d")
-          sed -i.bak -E "s/^version: .*/version: ${tag}/" CITATION.cff
-          sed -i.bak -E "s/^date-released: .*/date-released: ${date}/" CITATION.cff
-          rm CITATION.cff.bak
-          git add CITATION.cff
-          git commit -m "Update CITATION.cff for version ${tag}"
-      - name: Push changes
-        run: |
-          git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create and push tag
-        run: |
-          git tag ${{ steps.date_tag.outputs.tag }}
-          git push origin ${{ steps.date_tag.outputs.tag }}
+          git tag ${{ steps.get_tag.outputs.tag }}
+          git push origin ${{ steps.get_tag.outputs.tag }}
       - name: Create GitHub Release with Notes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create ${{ steps.date_tag.outputs.tag }} --generate-notes --title "${{ steps.date_tag.outputs.tag }}"
+          gh release create ${{ steps.get_tag.outputs.tag }} --generate-notes --title "${{ steps.get_tag.outputs.tag }}"
 
   publish:
     name: Publish
