@@ -64,7 +64,7 @@ which is the ND generalisation of the 1-D $e^{\,i\,(n-m)\theta}$.
 You still get
 
 ```math
-A_{nm}\;=\;\operatorname{Re}
+A_{nm}\;=\;\mathrm{Re}
 \bigl[q_n k_m^{*}\;e^{\,i\,\langle\mathbf{p}_n-\mathbf{p}_m,
 \boldsymbol\theta\rangle}\bigr],
 ```
