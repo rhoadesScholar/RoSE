@@ -2,12 +2,11 @@
 
 ## Original implementation of Rotary Spatial Embeddings (in PyTorch)
 
-![License](https://img.shields.io/github/license/rhoadesScholar/RoSE)
+![PyPI - License](https://img.shields.io/pypi/l/rotary-spatial-embeddings)
 [![CI/CD Pipeline](https://github.com/rhoadesScholar/RoSE/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/rhoadesScholar/RoSE/actions/workflows/ci-cd.yml)
 [![codecov](https://codecov.io/github/rhoadesScholar/RoSE/graph/badge.svg?token=PPT4ZNZZCJ)](https://codecov.io/github/rhoadesScholar/RoSE)
-[![PyPI version](https://badge.fury.io/py/rose-spatial-embeddings.svg)](https://badge.fury.io/py/rose-spatial-embeddings)
-![Python Version from PEP 621 TOML](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2FrhoadesScholar%2FRoSE%2Frefs%2Fheads%2Fmain%2Fpyproject.toml)
-
+![PyPI - Version](https://img.shields.io/pypi/v/rotary-spatial-embeddings)
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/rotary-spatial-embeddings)
 
 
 Rotary Spatial Embeddings (RoSE) extends [2D Rotary Position Embeddings (RoPE)](https://arxiv.org/abs/2403.13298) and the original [1D RoPE](https://arxiv.org/pdf/2104.09864) to incorporate into the embeddings spatial information in terms of N-dimensional real world coordinates. This is particularly useful for tasks that require understanding of spatial relationships across different scales, such as in microscopy.
