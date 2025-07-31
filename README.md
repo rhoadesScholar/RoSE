@@ -1,4 +1,4 @@
-# RoSE
+# RoSE N-dimensional Rotary Spatial Embeddings
 
 ## Original implementation of Rotary Spatial Embeddings (in PyTorch)
 
@@ -8,130 +8,73 @@
 [![PyPI version](https://badge.fury.io/py/rose-spatial-embeddings.svg)](https://badge.fury.io/py/rose-spatial-embeddings)
 [![Python versions](https://img.shields.io/pypi/pyversions/rose-spatial-embeddings.svg)](https://pypi.org/project/rose-spatial-embeddings/)
 
+Rotary Spatial Embeddings (RoSE) extends [2D Rotary Position Embeddings (RoPE)](https://arxiv.org/abs/2403.13298) and the original [1D RoPE](https://arxiv.org/pdf/2104.09864) to incorporate into the embeddings spatial information in terms of N-dimensional real world coordinates. This is particularly useful for tasks that require understanding of spatial relationships across different scales, such as in microscopy.
 
-Rotary Spatial Embeddings (RoSE) extends 2D [Rotary Position Embeddings (RoPE)](https://arxiv.org/abs/2403.13298) to incorporate spatial information in terms of real world coordinates into the embeddings. This is particularly useful for tasks that require understanding of spatial relationships across different scales, such as in microscopy. Additionally, RoSE implements isotropic embeddings, providing rotation-equivariance across all dimensions.
+## Explanation
 
-# Rotation-equivariant Rotary Spatial Embeddings
-### We extend 2-D Rotary Embeddings with a orthonormal frame.
+### 1 Relative phase in 1-D RoPE
 
-### 1 Original 2-D RoPE
-
-In two spatial dimensions the original Rotary Positional Embedding draws a single angle $
-\theta \in [0, 2\pi)$ and forms the $2\times2$ rotation matrix
+If you write the 1-D RoPE positional factor for token $t$ as a per-token complex phase
 
 ```math
-R_\theta \;=\;
-\begin{bmatrix}
-\cos\theta & -\sin\theta\\
-\sin\theta &  \cos\theta
-\end{bmatrix}.
+\phi(t)=e^{\,i\,t\theta},\qquad t\in\mathbb Z .
 ```
 
-For each exponentially-spaced magnitude $\mathrm{mag}_k$ it then stores, per axis,
+After you attach that phase to query $q_t$ and key $k_t$,
 
 ```math
-\bigl[f^{(x)}_k \;\big|\; f^{(y)}_k\bigr] \;=\;
-\mathrm{mag}_k
-\bigl[R_\theta^{\top}\bigr]_{0:2}
+\tilde q_t = q_t\;\phi(t),\qquad
+\tilde k_t = k_t\;\phi(t)^{*},
+```
+
+where $^*$ denotes complex conjugation, their dot-product inside attention becomes
+
+```math
+\tilde q_n\,\tilde k_m^{}
+\;=\; q_n\,k_m^{}\,
+\underbrace{\phi(n)\,\phi(m)^{*}}_{=\,e^{\,i\,(n-m)\theta}} .
+```
+
+⸻
+
+### 2 Extending to N dimensions
+
+Give every token a coordinate vector
+$\mathbf{p}=(x,y,z,\dots)\in\mathbb R^{N}.$
+
+Define its phase as
+
+```math
+\phi(\mathbf{p}) \;=\;e^{\,i\,\langle\mathbf{p},\,\boldsymbol\theta\rangle},
+\qquad
+\langle\mathbf{p},\boldsymbol\theta\rangle
+=\sum_{a=1}^{N} p_a\,\theta_a .
+```
+
+Then
+
+```math
+\phi(\mathbf{p}_n)\,\phi(\mathbf{p}_m)^{*}
 \;=\;
-\mathrm{mag}_k
-\,[\,\cos\theta,\;-\sin\theta \;\big|\; \sin\theta,\;\cos\theta\,].
+e^{\,i\,\langle\mathbf{p}_n-\mathbf{p}_m,\;\boldsymbol\theta\rangle},
 ```
 
-When an $(x,y)$ coordinate is encountered at run time the phase for that frequency is
+which is the ND generalisation of the 1-D $e^{\,i\,(n-m)\theta}$.
+You still get
 
 ```math
-\phi_k = x\,f^{(x)}_k + y\,f^{(y)}_k
-       = \mathrm{mag}_k\bigl(x\cos\theta+y\sin\theta \;\big|\;
-                                    -x\sin\theta+y\cos\theta\bigr),
+A_{nm}\;=\;\operatorname{Re}
+\bigl[q_n k_m^{*}\;e^{\,i\,\langle\mathbf{p}_n-\mathbf{p}_m,
+\boldsymbol\theta\rangle}\bigr],
 ```
 
-(i.e. the real/imaginary parts of $\mathrm{mag}_k\,(x+iy)\,e^{-i\theta}$).
-
-Importantly, *no rotation is applied to the coordinates themselves; only the stored
-frequency rows are pre-rotated at initialization with a uniformly distributed random angle*. These frequencies are then used to compute the phase at run time, and, optionally, can be learnable parameters.
+while keeping the per-token encoding cost $O(LD)$.
 
 ---
 
-### 2 Generalizing to **D** dimensions via a QR frame
+### 3 Embedding real-world coordinates
 
-In $D>2$ spatial dimensions, we need to maintain orthogonality between all frequency components while preserving the complex structure of rotary embeddings. For $D$ spatial dimensions, we require $2D$ orthogonal vectors: $D$ for real parts and $D$ for imaginary parts.
-
-We sample **one orthonormal matrix** of size $(2D \times 2D)$:
-
-```math
-A \;\in\; \mathrm{SO}(2D)
-\quad\text{(via QR decomposition, once per head).}
-```
-
-From this matrix, we extract $D$ pairs of orthogonal columns. For spatial dimension $i \in \{0, 1, \ldots, D-1\}$, we use columns $(2i, 2i+1)$ as the orthogonal basis pair:
-
-```math
-(v_{i,0},\;v_{i,1}) = (A_{\star,2i},\;A_{\star,2i+1})
-```
-
-Each pair $(v_{i,0}, v_{i,1})$ represents the real and imaginary frequency directions for spatial dimension $i$, and all $2D$ vectors are mutually orthogonal by construction.
-
-For every frequency $k$ and spatial dimension $i$, we store:
-
-```math
-\text{real}_{i,k} \;=\; \mathrm{mag}_k \cdot v_{i,0}[i], \quad
-\text{imag}_{i,k} \;=\; \mathrm{mag}_k \cdot v_{i,1}[i]
-```
-
-where $v_{i,0}[i]$ denotes the $i$-th component of the $2D$-dimensional vector $v_{i,0}$.
-
-The phase accumulated at run time is:
-
-```math
-\phi_k = \sum_{i=0}^{D-1} t_i \left(\text{real}_{i,k} + i \cdot \text{imag}_{i,k}\right)
-```
-
-with $t=(t_0,\dots,t_{D-1})$ the coordinate vector.
-
-This approach ensures that:
-- All frequency components remain orthogonal across all spatial dimensions
-- The complex structure necessary for rotation equivariance is preserved
-- Each spatial dimension has its own independent real/imaginary basis pair
-- The geometric relationships are maintained under coordinate rotations
-
----
-
-### 3 Why use an orthonormal frame?
-
-* **Isotropy without extra cost**  
-  The axes of the data can be arbitrarily permuted or rotated; because the
-  frequency lattice was sampled from $\mathrm{SO}(D)$, the attention mechanism
-  sees no privileged “x-axis” or “y-axis”.  This removes an inductive bias that
-  might otherwise hinder learning on
-  volumetric data, point clouds, or molecular coordinates.
-
-* **Head-level diversity**  
-  Sampling a fresh $R$ for each attention head at initialization, and allowing the resulting frequencies to be learnable parameters, supplies
-  *independent* 2-D sub-planes.
-  Heads can therefore specialise in very different directional cues without
-  any run-time overhead.
-
-* **Exact backward-compatibility**  
-  Setting `rotate=False` makes $R$ the identity; the recipe collapses to the
-  classic axis-wise RoPE.
-
-* **Still a single complex multiply**  
-  Because every axis keeps just **two** frequency channels (real and imaginary),
-  we retain the efficient `view_as_complex` implementation strategy—no need for
-  extra tensor reshapes or larger hidden states.
-
----
-
-### 4 Embedding real-world coordinates
-
-In many applications, such as microscopy or 3D point clouds, the coordinates are not just indices but represent real-world positions that may contain useful spatial information. RoSE allows for injecting these coordinates directly into the rotary embeddings.
-
----
-
-### 5 Conclusion
-
-The QR‐based initialisation is a drop-in, mathematically faithful extension of the 2-D RoPE idea: one global plane per head, orthonormally embedded inside $\mathbb R^{D}$.  It keeps the computational footprint unchanged while gifting the model rotation-equivariance across all spatial dimensions. The additional ability to inject real-world coordinates makes RoSE particularly powerful for tasks that require understanding exact spatial relationships, such as in microscopy or 3D point clouds.
+In many applications, such as microscopy or 3D point clouds, the coordinates are not just indices but represent real-world positions that may contain useful spatial information. RoSE allows for injecting these coordinates directly into the rotary embeddings by simply multiplyin the coordinate vectors by the coordinate spacing (i.e. voxel size) before applying the rotary embedding.
 
 ---
 
