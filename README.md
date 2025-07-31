@@ -97,10 +97,10 @@ pip install git+https://github.com/rhoadesScholar/RoSE.git
 
 ```python
 import torch
-from RoSE import RoSELayer, RoSEMultiheadSelfAttention
+from RoSE import RoSEMultiheadSelfAttention
 
 # Basic RoSE layer for applying rotary spatial embeddings to q and k
-layer = RoSELayer(dim=128, num_heads=8, spatial_dims=3, learnable=True)
+layer = RoSEMultiheadSelfAttention(dim=128, num_heads=8, spatial_dims=3, learnable=True)
 
 batch_size, seq_len = 2, 1000
 q = torch.randn(batch_size, seq_len, 128)
