@@ -75,7 +75,7 @@ while keeping the per-token encoding cost $O(LD)$.
 
 ### 3 Embedding real-world coordinates
 
-In many applications, such as microscopy or 3D point clouds, the coordinates are not just indices but represent real-world positions that may contain useful spatial information. RoSE allows for injecting these coordinates directly into the rotary embeddings by simply multiplyin the coordinate vectors by the coordinate spacing (i.e. voxel size) before applying the rotary embedding.
+In many applications, such as microscopy or 3D point clouds, the coordinates are not just indices but represent real-world positions that may contain useful spatial information. RoSE allows for injecting these coordinates directly into the rotary embeddings by simply multiplying the coordinate vectors by the coordinate spacing (i.e. voxel size) before applying the rotary embedding.
 
 ---
 
