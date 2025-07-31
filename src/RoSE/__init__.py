@@ -15,21 +15,11 @@ except PackageNotFoundError:
 __author__ = "Jeff Rhoades"
 __email__ = "rhoadesj@hhmi.org"
 
-from .rose import (
-    RoSELayer,
-    apply_rotary_emb,
-    reshape_for_broadcast,
-    init_nd_freqs,
-    init_t_nd,
-)
+from .rose import RoSEMultiHeadAttention
 
 __all__ = [
     "__version__",
     "__author__",
     "__email__",
-    "RoSELayer",
-    "apply_rotary_emb",
-    "reshape_for_broadcast",
-    "init_nd_freqs",
-    "init_t_nd",
+    "RoSEMultiHeadAttention",
 ]

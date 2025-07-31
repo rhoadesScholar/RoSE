@@ -3,11 +3,11 @@
 import pytest
 import torch
 
-from RoSE import RoSELayer
+from RoSE import RoSEMultiHeadAttention
 
 
-class TestRoSELayer:
-    """Test cases for RoSELayer."""
+class TestRoSEMultiHeadAttention:
+    """Test cases for RoSEMultiHeadAttention."""
 
     @pytest.mark.parametrize(
         "spatial_dims, learnable",
@@ -22,7 +22,7 @@ class TestRoSELayer:
         """Test RoSELayer initialization for various spatial dimensions and learnability."""
         dim = 64 * 2 * spatial_dims  # Ensure dim is divisible by num_heads
         num_heads = 8
-        layer = RoSELayer(
+        layer = RoSEMultiHeadAttention(
             dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=learnable
         )
         assert layer.dim == dim
@@ -40,10 +40,10 @@ class TestRoSELayer:
         ],
     )
     def test_rose_layer_forward(self, spatial_dims, learnable):
-        """Test RoSELayer forward pass for 2D/3D and learnable/non-learnable."""
+        """Test RoSE forward pass for 2D/3D and learnable/non-learnable."""
         dim = 64 * 2 * spatial_dims  # Ensure dim is divisible by num_heads
         num_heads = 8
-        layer = RoSELayer(
+        layer = RoSEMultiHeadAttention(
             dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=learnable
         )
 
@@ -57,12 +57,11 @@ class TestRoSELayer:
         k = torch.randn(batch_size, seq_len, dim)
 
         # Forward pass
-        q_out, k_out = layer(q, k, voxel_size, grid_shape)
+        attn = layer(q, k, voxel_size, grid_shape)
 
-        assert q_out.shape == q.shape
-        assert k_out.shape == k.shape
+        assert attn.shape == (batch_size, num_heads, seq_len, seq_len)
 
     def test_dim_not_divisible_by_heads(self):
         """Test that initialization fails when dim is not divisible by num_heads."""
         with pytest.raises(AssertionError):
-            RoSELayer(dim=129, num_heads=8)
+            RoSEMultiHeadAttention(dim=129, num_heads=8)
