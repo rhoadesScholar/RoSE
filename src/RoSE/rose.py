@@ -16,15 +16,13 @@ def _make_log_spaced_frequencies(
     base_theta: float = 1e4,
 ) -> torch.Tensor:
     """
-    Roughly imitates the original RoPE frequency schedule:
-        ω_k = 1 / (base_theta ** (2k / D))
-    but returns a tensor shaped (num_planes, spatial_dims).
-    Every spatial axis shares the same 1D schedule so that
-    the dot-product 'coords ⋅ ω' has a clean log scale.
+    Generate log-spaced frequencies ω_p in R^{spatial_dims} for p=0..num_planes-1.
+    Frequencies only depend on plane index, so translation cancels out.
     """
     exponents = torch.arange(num_planes, dtype=torch.float32) * 2.0 / (num_planes * 2)
-    freqs_1d = 1.0 / (base_theta**exponents)  # (num_planes,)
-    freqs = freqs_1d.unsqueeze(-1).repeat(1, spatial_dims)  # (num_planes, d)
+    log_freqs = -exponents * math.log(base_theta)
+    freqs_1d = torch.exp(log_freqs)  # shape (num_planes,)
+    freqs = freqs_1d.unsqueeze(-1).repeat(1, spatial_dims)
     return freqs
 
 
@@ -79,16 +77,27 @@ class RotarySpatialEmbedding(nn.Module):
         base_theta: float = 1e4,
         learnable: bool = True,
         init_jitter_std: float = 0.02,
+        frequency_scaling: str = "sqrt",
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        assert dim % 2 == 0, "dim must be even for complex representation"
         self.dim = dim
         self.num_heads = num_heads
         self.spatial_dims = spatial_dims
-        self.rope_theta = base_theta ** (1 / spatial_dims)
         self.learnable = learnable
 
         num_planes = dim // 2
+
+        if frequency_scaling == "none":
+            self.rope_theta = base_theta
+        elif frequency_scaling == "linear":
+            self.rope_theta = base_theta ** (1 / spatial_dims)
+        elif frequency_scaling == "sqrt":
+            self.rope_theta = base_theta ** (1 / math.sqrt(spatial_dims))
+        elif frequency_scaling == "adaptive":
+            self.rope_theta = base_theta ** (2.0 / (spatial_dims * dim))
+
         freqs = _make_log_spaced_frequencies(
             num_planes, spatial_dims, self.rope_theta
         )  # (num_planes, spatial_dims)
@@ -97,8 +106,10 @@ class RotarySpatialEmbedding(nn.Module):
         if learnable:
             if init_jitter_std > 0:
                 eps = torch.randn_like(freqs) * init_jitter_std
-                freqs = torch.exp(freqs.log() + eps)
-            self.freqs = nn.Parameter(freqs)  # learned per head/plane
+                freqs = torch.exp(torch.clamp(freqs.log() + eps, min=-10, max=10))
+            self.freqs = nn.Parameter(
+                freqs, requires_grad=True
+            )  # learned per head/plane
         else:
             self.register_buffer("freqs", freqs, persistent=False)
 
@@ -131,9 +142,12 @@ class RotarySpatialEmbedding(nn.Module):
         # Apply rotary embeddings
         x = x * ph_x.unsqueeze(0)  # (B, N, H, P)
 
+        # Get real part
+        x = torch.view_as_real(x).flatten(-2)  # (B, N, H, D)
+
         if flatten:
             # Reshape back to original dimensions
-            x = torch.view_as_real(x).flatten(2)  # (B, N, D)
+            x = torch.flatten(x, 2)  # (B, N, D)
 
         return x
 
@@ -176,6 +190,7 @@ class RoSEMultiHeadAttention(nn.Module):
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        assert dim % 2 == 0, "dim must be even for complex representation"
         self.dim = dim
         self.num_heads = num_heads
         self.spatial_dims = spatial_dims
@@ -209,8 +224,8 @@ class RoSEMultiHeadAttention(nn.Module):
             k_grid_shape = q_grid_shape
 
         # Rotate embeddings
-        q = self.q_pe(q, q_spacing, q_grid_shape, flatten=False)  # (B, N_q, D)
-        k = self.k_pe(k, k_spacing, k_grid_shape, flatten=False)  # (B, N_k, D)
+        q = self.q_pe(q, q_spacing, q_grid_shape, flatten=False)  # (B, H, N_q, D)
+        k = self.k_pe(k, k_spacing, k_grid_shape, flatten=False)  # (B, H, N_k, D)
 
         # Compute attention scores
         attn = torch.einsum("bnhp,bmhp->bhnm", q, k)  # (B, H, N_q, N_k)
