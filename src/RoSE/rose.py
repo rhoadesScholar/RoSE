@@ -40,18 +40,19 @@ def _init_p_nd(
     idxs = torch.stack(torch.unravel_index(p, dims), dim=-1).to(
         dtype=dtype, device=device
     )  # (N, spatial_dims)
-    return idxs * torch.tensor(spacing, device=device, dtype=dtype).view(1, -1)
+    return idxs * torch.tensor(
+        spacing, device=device, dtype=dtype, requires_grad=False
+    ).view(1, -1)
 
 
-class RoSEMultiHeadAttention(nn.Module):
+class RotarySpatialEmbedding(nn.Module):
     """
-    Rotates key and query embeddings in 2-D sub-planes, then computes multi-head attention.
+    Rotates input embeddings in 2-D sub-planes, independently per attention group (head).
 
     Given:
-        q: Tensor of shape (B, N, D)   – query embeddings (D must be even)
-        k: Tensor of shape (B, M, D)   – key embeddings (D must be even)
+        x: Tensor of shape (B, N, D)   – input embeddings (D must be even)
     Returns:
-        attn: Tensor of shape (B, H, N, M) – attention scores
+        x_rot: Tensor of shape (B, N, D) – rotated embeddings
 
     Definitions:
       • H    = num_heads
@@ -109,46 +110,107 @@ class RoSEMultiHeadAttention(nn.Module):
 
     def forward(
         self,
-        q: torch.Tensor,
-        k: torch.Tensor,
+        x: torch.Tensor,  # (B, N, D)
+        spacing: Tuple[float, ...],
+        grid_shape: Optional[Tuple[int, ...]] = None,
+        flatten: bool = True,
+    ) -> torch.Tensor:
+        # Get position tensor
+        pos = _init_p_nd(
+            grid_shape, spacing=spacing, dtype=x.dtype, device=x.device
+        )  # (N, spatial_dims)
+
+        # Get phase vectors
+        ph_x = torch.einsum("td,hpd->thp", pos, self.freqs)  # (N, H, P)
+
+        ph_x = ph_x.cos() + 1j * ph_x.sin()  # (N, H, P)
+
+        # Split x into real and imaginary parts, per head/plane
+        x = self._get_complex_split(x)  # (B, N, H, P)
+
+        # Apply rotary embeddings
+        x = x * ph_x.unsqueeze(0)  # (B, N, H, P)
+
+        if flatten:
+            # Reshape back to original dimensions
+            x = torch.view_as_real(x).flatten(2)  # (B, N, D)
+
+        return x
+
+
+class RoSEMultiHeadAttention(nn.Module):
+    """
+    Rotates key and query embeddings in 2-D sub-planes, then computes multi-head attention.
+
+    Given:
+        q: Tensor of shape (B, N, D)   – query embeddings (D must be even)
+        k: Tensor of shape (B, M, D)   – key embeddings (D must be even)
+    Returns:
+        attn: Tensor of shape (B, H, N, M) – attention scores
+
+    Definitions:
+      • H    = num_heads
+      • P    = D // 2               – number of 2-D sub-planes
+      • pos_n, pos_m ∈ ℝᵈ          – coordinates of tokens n and m
+      • ω_{h,p} ∈ ℝᵈ              – frequency vector for head h, plane p
+      • cis(θ) = cos(θ) + i·sin(θ)
+
+    Angle computation for head h, plane p at position t:
+        θ_{h,p}(t) = ⟨pos_t, ω_{h,p}⟩
+
+    Attention matrix A[b,h,n,m]:
+        A[b,h,n,m] = Re ⎡
+            ∑_{p=0}^{P-1}
+              q[b,h,n,p] · conj(k[b,h,m,p]) · cis( ⟨pos_n − pos_m, ω_{h,p}⟩ )
+        ⎤
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        spatial_dims: int = 2,
+        base_theta: float = 1e4,
+        learnable: bool = True,
+        init_jitter_std: float = 0.02,
+    ):
+        super().__init__()
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        self.dim = dim
+        self.num_heads = num_heads
+        self.spatial_dims = spatial_dims
+        self.rope_theta = base_theta ** (1 / spatial_dims)
+        self.learnable = learnable
+        self.init_jitter_std = init_jitter_std
+
+        pe_kwargs = {
+            "dim": dim,
+            "num_heads": num_heads,
+            "spatial_dims": spatial_dims,
+            "base_theta": base_theta,
+            "learnable": learnable,
+            "init_jitter_std": init_jitter_std,
+        }
+        self.q_pe = RotarySpatialEmbedding(**pe_kwargs)
+        self.k_pe = RotarySpatialEmbedding(**pe_kwargs)
+
+    def forward(
+        self,
+        q: torch.Tensor,  # (B, N_q, D)
+        k: torch.Tensor,  # (B, N_k, D)
         q_spacing: Tuple[float, ...],
         q_grid_shape: Tuple[int, ...],
         k_spacing: Optional[Tuple[float, ...]] = None,
         k_grid_shape: Optional[Tuple[int, ...]] = None,
     ) -> torch.Tensor:
-        # Get position tensors
-        q_pos = _init_p_nd(
-            q_grid_shape, spacing=q_spacing, dtype=q.dtype, device=q.device
-        )  # (N_q, spatial_dims)
-        if k_spacing is None and k_grid_shape is None:
-            k_pos = q_pos
-        else:
-            if k_spacing is None:
-                k_spacing = q_spacing
-            if k_grid_shape is None:
-                k_grid_shape = q_grid_shape
-            k_pos = _init_p_nd(
-                k_grid_shape, spacing=k_spacing, dtype=q.dtype, device=k.device
-            )  # (N_k, spatial_dims)
+        if k_spacing is None:
+            k_spacing = q_spacing
+        if k_grid_shape is None:
+            k_grid_shape = q_grid_shape
 
-        # Get phase vectors
-        ph_q = torch.einsum("td,hpd->thp", q_pos, self.freqs)  # (N_q, H, P)
-        ph_k = torch.einsum("td,hpd->thp", k_pos, self.freqs)  # (N_k, H, P)
-
-        ph_q = ph_q.cos() + 1j * ph_q.sin()  # (N_q, H, P)
-        ph_k = ph_k.cos() - 1j * ph_k.sin()  # (N_k, H, P) - complex conjugate
-
-        # Split q and k into real and imaginary parts, per head/plane
-        q = self._get_complex_split(q)  # (B, N_q, H, P)
-        k = self._get_complex_split(k)  # (B, N_k, H, P)
-
-        # Apply rotary embeddings
-        q = q * ph_q.unsqueeze(0)  # (B, N_q, H, P)
-        k = k * ph_k.unsqueeze(0)  # (B, N_k, H, P)
-
-        # Reshape back to original dimensions
-        q = torch.view_as_real(q).flatten(3)  # (B, N_q, H, P*2)
-        k = torch.view_as_real(k).flatten(3)  # (B, N_k, H, P*2)
+        # Rotate embeddings
+        q = self.q_pe(q, q_spacing, q_grid_shape, flatten=False)  # (B, N_q, D)
+        k = self.k_pe(k, k_spacing, k_grid_shape, flatten=False)  # (B, N_k, D)
 
         # Compute attention scores
         attn = torch.einsum("bnhp,bmhp->bhnm", q, k)  # (B, H, N_q, N_k)
