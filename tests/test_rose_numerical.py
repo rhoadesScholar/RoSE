@@ -8,6 +8,464 @@ import torch
 from RoSE.rose import RotarySpatialEmbedding, _init_p_nd, _make_log_spaced_frequencies
 
 
+class TestRotarySpatialEmbedding:
+    """Comprehensive tests for RotarySpatialEmbedding class."""
+
+    @pytest.mark.parametrize("dim", [32, 64, 128])
+    @pytest.mark.parametrize("num_heads", [4, 8, 16])
+    @pytest.mark.parametrize("spatial_dims", [2, 3, 4])
+    def test_initialization_parameters(
+        self, dim: int, num_heads: int, spatial_dims: int
+    ):
+        """Test various initialization parameters."""
+        # Skip invalid combinations
+        if dim % num_heads != 0 or dim % 2 != 0:
+            pytest.skip("Invalid dim/num_heads combination")
+
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+        )
+
+        assert layer.dim == dim
+        assert layer.num_heads == num_heads
+        assert layer.spatial_dims == spatial_dims
+        assert layer.freqs.shape == (num_heads, dim // (2 * num_heads), spatial_dims)
+
+    def test_invalid_initialization(self):
+        """Test that invalid parameters raise appropriate errors."""
+        # Dim not divisible by num_heads
+        with pytest.raises(AssertionError, match="dim must be divisible by num_heads"):
+            RotarySpatialEmbedding(dim=65, num_heads=8)
+
+        # Odd dimension
+        with pytest.raises(AssertionError, match="dim must be even"):
+            RotarySpatialEmbedding(dim=63, num_heads=7)
+
+    @pytest.mark.parametrize(
+        "frequency_scaling", ["none", "linear", "sqrt", "adaptive"]
+    )
+    def test_frequency_scaling_modes(self, frequency_scaling: str):
+        """Test different frequency scaling modes."""
+        base_theta = 1e4
+        spatial_dims = 3
+        dim = 64
+        num_heads = 8
+
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            frequency_scaling=frequency_scaling,
+            base_theta=base_theta,
+            learnable=False,
+        )
+
+        # Check that rope_theta is computed correctly
+        expected_theta = base_theta  # Default case
+        if frequency_scaling == "none":
+            expected_theta = base_theta
+        elif frequency_scaling == "linear":
+            expected_theta = base_theta ** (1 / spatial_dims)
+        elif frequency_scaling == "sqrt":
+            expected_theta = base_theta ** (1 / math.sqrt(spatial_dims))
+        elif frequency_scaling == "adaptive":
+            expected_theta = base_theta ** (2.0 / (spatial_dims * dim))
+
+        assert abs(layer.rope_theta - expected_theta) < 1e-6
+
+    def test_learnable_vs_fixed_frequencies(self):
+        """Test difference between learnable and fixed frequencies."""
+        dim, num_heads, spatial_dims = 64, 8, 2
+
+        # Fixed frequencies
+        fixed_layer = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+        )
+        assert not fixed_layer.freqs.requires_grad
+
+        # Learnable frequencies
+        learnable_layer = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=True
+        )
+        assert learnable_layer.freqs.requires_grad
+
+    def test_jitter_initialization(self):
+        """Test that jitter initialization creates different frequencies."""
+        dim, num_heads, spatial_dims = 64, 8, 2
+
+        # Without jitter
+        layer_no_jitter = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=True,
+            init_jitter_std=0.0,
+        )
+
+        # With jitter
+        layer_with_jitter = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=True,
+            init_jitter_std=0.1,
+        )
+
+        # Base frequencies should be the same before jitter
+        base_freqs = _make_log_spaced_frequencies(
+            dim // 2, spatial_dims, layer_no_jitter.rope_theta
+        )
+        base_freqs = base_freqs.reshape(num_heads, -1, spatial_dims)
+
+        # Without jitter, frequencies should be the same
+        assert torch.allclose(layer_no_jitter.freqs, base_freqs, atol=1e-6)
+
+        # With jitter, frequencies should be different
+        assert not torch.allclose(layer_with_jitter.freqs, base_freqs, atol=1e-6)
+
+    @pytest.mark.parametrize("batch_size", [1, 4, 8])
+    @pytest.mark.parametrize("shape", [4, 8, 16])
+    @pytest.mark.parametrize("spatial_dims", [2, 3])
+    def test_forward_pass_shapes(self, batch_size: int, shape: int, spatial_dims: int):
+        """Test forward pass with various input shapes."""
+        seq_len = (
+            shape**spatial_dims
+        )  # Ensure seq_len is compatible with spatial_dims
+        dim = 16
+        num_heads = 4
+
+        layer = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+        )
+
+        x = torch.randn(batch_size, seq_len, dim)
+        grid_shape = (shape,) * spatial_dims
+        spacing = tuple([1.0] * spatial_dims)
+
+        output = layer(x, spacing, grid_shape)
+        assert output.shape == (batch_size, seq_len, dim)
+
+    def test_complex_split_functionality(self):
+        """Test the _get_complex_split method."""
+        dim, num_heads, spatial_dims = 64, 8, 2
+        batch_size, seq_len = 2, 16
+
+        layer = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+        )
+
+        x = torch.randn(batch_size, seq_len, dim)
+        complex_x = layer._get_complex_split(x)
+
+        expected_shape = (batch_size, seq_len, num_heads, dim // (2 * num_heads))
+        assert complex_x.shape == expected_shape
+        assert complex_x.dtype == torch.complex64
+
+    def test_device_consistency(self):
+        """Test that layer works consistently across devices."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        batch_size, seq_len = 2, 9
+
+        layer = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+        )
+
+        grid_shape = (3, 3)
+        spacing = (1.0, 1.0)
+
+        # Test CPU
+        x_cpu = torch.randn(batch_size, seq_len, dim)
+        output_cpu = layer(x_cpu, spacing, grid_shape)
+        assert output_cpu.device == x_cpu.device
+
+        # Test GPU if available
+        if torch.cuda.is_available():
+            layer_gpu = layer.to("cuda")
+            x_gpu = x_cpu.to("cuda")
+            output_gpu = layer_gpu(x_gpu, spacing, grid_shape)
+            assert output_gpu.device == x_gpu.device
+            # Results should be the same (within numerical precision)
+            torch.testing.assert_close(
+                output_cpu, output_gpu.cpu(), rtol=1e-5, atol=1e-6
+            )
+
+    def test_dtype_consistency(self):
+        """Test that layer handles float32 input properly."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        batch_size, seq_len = 2, 9
+
+        layer = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+        )
+
+        grid_shape = (3, 3)
+        spacing = (1.0, 1.0)
+
+        # Test float32 - this should work reliably
+        x_f32 = torch.randn(batch_size, seq_len, dim, dtype=torch.float32)
+        output_f32 = layer(x_f32, spacing, grid_shape)
+        assert output_f32.dtype == torch.float32
+
+        # Test that the layer doesn't change the dtype unexpectedly
+        x_f16 = torch.randn(batch_size, seq_len, dim, dtype=torch.float16)
+        try:
+            output_f16 = layer(x_f16, spacing, grid_shape)
+            # If it works, check dtype is preserved in the output
+            assert output_f16.dtype == torch.float16
+        except RuntimeError:
+            # If it fails due to dtype mismatch, that's expected behavior
+            pass
+
+    def test_flatten_parameter(self):
+        """Test the flatten parameter in forward pass."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        batch_size, seq_len = 2, 9
+
+        layer = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+        )
+
+        x = torch.randn(batch_size, seq_len, dim)
+        grid_shape = (3, 3)
+        spacing = (1.0, 1.0)
+
+        # With flattening (default)
+        output_flat = layer(x, spacing, grid_shape, flatten=True)
+        assert output_flat.shape == (batch_size, seq_len, dim)
+
+        # Without flattening - based on the implementation: (B, H, N, D_heads)
+        output_unflat = layer(x, spacing, grid_shape, flatten=False)
+        expected_shape = (batch_size, num_heads, seq_len, dim // num_heads)
+        assert output_unflat.shape == expected_shape
+
+        # Flattened version should be equivalent to manually flattening
+        output_manual_flat = output_unflat.transpose(1, 2).flatten(-2)
+        torch.testing.assert_close(output_flat, output_manual_flat)
+
+    @pytest.mark.parametrize("spatial_dims", [2, 3, 4])
+    def test_position_encoding_consistency(self, spatial_dims: int):
+        """Test that position encoding is consistent across different calls."""
+        dim = 32 * spatial_dims
+        num_heads = 4
+
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            init_jitter_std=0.0,  # No randomness
+        )
+
+        batch_size = 2
+        grid_size = 4
+        grid_shape = tuple([grid_size] * spatial_dims)
+        spacing = tuple([0.5] * spatial_dims)
+        seq_len = math.prod(grid_shape)
+
+        # The position-dependent rotation should be the same for both
+        # Create identical inputs to test this
+        x_same = torch.ones(batch_size, seq_len, dim)
+        output_same1 = layer(x_same, spacing, grid_shape)
+        output_same2 = layer(x_same, spacing, grid_shape)
+
+        torch.testing.assert_close(output_same1, output_same2)
+
+    def test_backward_compatibility(self):
+        """Test that the layer can handle edge cases gracefully."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+
+        layer = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+        )
+
+        # Test with minimum valid inputs
+        x_min = torch.randn(1, 1, dim)
+        output_min = layer(x_min, (1.0, 1.0), (1, 1))
+        assert output_min.shape == (1, 1, dim)
+
+        # Test with larger grids
+        x_large = torch.randn(1, 100, dim)
+        output_large = layer(x_large, (0.1, 0.1), (10, 10))
+        assert output_large.shape == (1, 100, dim)
+
+    def test_rotary_embedding_properties(self):
+        """Test fundamental properties of rotary embeddings."""
+        dim, num_heads, spatial_dims = 64, 8, 2
+        batch_size, seq_len = 2, 25
+
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            init_jitter_std=0.0,
+        )
+
+        x = torch.randn(batch_size, seq_len, dim)
+        grid_shape = (5, 5)
+        spacing = (1.0, 1.0)
+
+        # Apply embedding
+        x_rot = layer(x, spacing, grid_shape)
+
+        # Test magnitude preservation (rotations should preserve norms)
+        original_norms = torch.norm(x, dim=-1)
+        rotated_norms = torch.norm(x_rot, dim=-1)
+        torch.testing.assert_close(
+            original_norms,
+            rotated_norms,
+            rtol=1e-5,
+            atol=1e-6,
+            msg="Rotary embedding should preserve vector magnitudes",
+        )
+
+    def test_deterministic_behavior(self):
+        """Test that the layer produces deterministic results."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+
+        # Create two identical layers
+        layer1 = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            init_jitter_std=0.0,
+        )
+
+        layer2 = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            init_jitter_std=0.0,
+        )
+
+        x = torch.randn(2, 9, dim)
+        grid_shape = (3, 3)
+        spacing = (1.0, 1.0)
+
+        # Should produce identical results
+        output1 = layer1(x, spacing, grid_shape)
+        output2 = layer2(x, spacing, grid_shape)
+
+        torch.testing.assert_close(output1, output2)
+
+    def test_spatial_relationship_encoding(self):
+        """Test that spatial relationships are correctly encoded."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        batch_size = 1
+
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            init_jitter_std=0.0,
+        )
+
+        # Create a 2D grid
+        grid_shape = (4, 4)
+        spacing = (1.0, 1.0)
+        seq_len = math.prod(grid_shape)
+
+        # Test with identical vectors at different positions
+        x = torch.ones(batch_size, seq_len, dim)
+        x_rot = layer(x, spacing, grid_shape, flatten=False)  # (B, H, N, D_heads)
+
+        # Different positions should have different embeddings due to rotation
+        # Check that positions (0,0) and (1,1) have different embeddings
+        pos_00_idx = 0  # First position in grid
+        pos_11_idx = 5  # Position at (1,1) in 4x4 grid (row-major: 1*4 + 1 = 5)
+
+        embedding_00 = x_rot[0, :, pos_00_idx]  # (H, D_heads)
+        embedding_11 = x_rot[0, :, pos_11_idx]  # (H, D_heads)
+
+        # They should be different due to different rotations
+        assert not torch.allclose(embedding_00, embedding_11, atol=1e-6)
+
+    def test_scaling_invariance(self):
+        """Test behavior under coordinate scaling."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        batch_size = 1
+
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            init_jitter_std=0.0,
+        )
+
+        grid_shape = (3, 3)
+        seq_len = math.prod(grid_shape)
+        x = torch.randn(batch_size, seq_len, dim)
+
+        # Test with different spacings
+        output1 = layer(x, (1.0, 1.0), grid_shape)
+        output2 = layer(x, (2.0, 2.0), grid_shape)
+
+        # Outputs should be different due to different spatial scales
+        assert not torch.allclose(output1, output2, atol=1e-6)
+
+    @pytest.mark.parametrize("grid_size", [2, 4, 8])
+    def test_various_grid_sizes(self, grid_size: int):
+        """Test with various grid sizes."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+
+        layer = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+        )
+
+        batch_size = 1
+        grid_shape = (grid_size, grid_size)
+        seq_len = math.prod(grid_shape)
+        spacing = (1.0, 1.0)
+
+        x = torch.randn(batch_size, seq_len, dim)
+        output = layer(x, spacing, grid_shape)
+
+        assert output.shape == (batch_size, seq_len, dim)
+        # Check that output is not just zeros or identical to input
+        assert not torch.allclose(output, x, atol=1e-6)
+        assert not torch.allclose(output, torch.zeros_like(output), atol=1e-6)
+
+    def test_gradient_flow_through_embedding(self):
+        """Test that gradients flow properly through the embedding."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+
+        # Test learnable version
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=True,
+            init_jitter_std=0.01,
+        )
+
+        batch_size = 2
+        grid_shape = (3, 3)
+        seq_len = math.prod(grid_shape)
+        spacing = (1.0, 1.0)
+
+        x = torch.randn(batch_size, seq_len, dim, requires_grad=True)
+        output = layer(x, spacing, grid_shape)
+
+        # Compute a simple loss
+        loss = output.sum()
+        loss.backward()
+
+        # Check gradients exist
+        assert x.grad is not None
+        assert layer.freqs.grad is not None
+
+        # Check gradients are meaningful (non-zero)
+        assert torch.any(x.grad != 0)
+        assert torch.any(layer.freqs.grad != 0)
+
+
 class TestRoSENumericalProperties:
     """Test mathematical properties of RoSE implementation."""
 

@@ -143,13 +143,13 @@ class RotarySpatialEmbedding(nn.Module):
         x = x * ph_x.unsqueeze(0)  # (B, N, H, P)
 
         # Get real part
-        x = torch.view_as_real(x).flatten(-2)  # (B, N, H, D)
+        x = torch.view_as_real(x).flatten(-2)  # (B, N, H, D_heads)
 
         if flatten:
             # Reshape back to original dimensions
-            x = torch.flatten(x, 2)  # (B, N, D)
-
-        return x
+            return torch.flatten(x, 2)  # (B, N, D)
+        else:
+            return x.transpose(1, 2)  # (B, H, N, D_heads)
 
 
 class RoSEMultiHeadAttention(nn.Module):
@@ -224,11 +224,11 @@ class RoSEMultiHeadAttention(nn.Module):
             k_grid_shape = q_grid_shape
 
         # Rotate embeddings
-        q = self.q_pe(q, q_spacing, q_grid_shape, flatten=False)  # (B, H, N_q, D)
-        k = self.k_pe(k, k_spacing, k_grid_shape, flatten=False)  # (B, H, N_k, D)
+        q = self.q_pe(q, q_spacing, q_grid_shape, flatten=False)  # (B, H, N_q, D_heads)
+        k = self.k_pe(k, k_spacing, k_grid_shape, flatten=False)  # (B, H, N_k, D_heads)
 
         # Compute attention scores
-        attn = torch.einsum("bnhp,bmhp->bhnm", q, k)  # (B, H, N_q, N_k)
+        attn = torch.einsum("bhnp,bhmp->bhnm", q, k)  # (B, H, N_q, N_k)
 
         return attn
 
