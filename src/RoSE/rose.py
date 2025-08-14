@@ -154,7 +154,7 @@ class RotarySpatialEmbedding(nn.Module):
 
 class RoSEMultiHeadAttention(nn.Module):
     """
-    Rotates key and query embeddings in 2-D sub-planes, then computes multi-head attention.
+    Rotates key and query embeddings in 2-D sub-planes, then computes multi-head attention scores.
 
     Given:
         q: Tensor of shape (B, N, D)   – query embeddings (D must be even)

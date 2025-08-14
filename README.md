@@ -95,12 +95,20 @@ pip install git+https://github.com/rhoadesScholar/RoSE.git
 
 ## Usage
 
+### Basic Usage - Multi-Head Attention with Spatial Embeddings
+
 ```python
 import torch
-from RoSE import RoSEMultiheadSelfAttention
+from RoSE import RoSEMultiHeadAttention
 
-# Basic RoSE layer for applying rotary spatial embeddings to q and k
-layer = RoSEMultiheadSelfAttention(dim=128, num_heads=8, spatial_dims=3, learnable=True)
+# Create RoSE multi-head attention layer
+layer = RoSEMultiHeadAttention(
+    dim=128,
+    num_heads=8,
+    spatial_dims=3,
+    learnable=True,
+    base_theta=1e4
+)
 
 batch_size, seq_len = 2, 1000
 q = torch.randn(batch_size, seq_len, 128)
@@ -108,11 +116,36 @@ k = torch.randn(batch_size, seq_len, 128)
 
 # Define spatial grid properties
 grid_shape = (10, 10, 10)  # 3D grid dimensions
-voxel_size = (1.0, 1.0, 1.0)  # Physical size of each voxel
+spacing = (1.0, 1.0, 1.0)  # Physical size of each voxel
+
+# Compute attention scores with spatial embeddings
+attn_scores = layer(q, k, spacing, grid_shape)  # Shape: (batch_size, num_heads, seq_len, seq_len)
+```
+
+### Using Just the Embedding Layer
+
+```python
+import torch
+from RoSE import RotarySpatialEmbedding
+
+# Create just the rotary spatial embedding layer
+embedding = RotarySpatialEmbedding(
+    dim=128,
+    num_heads=8,
+    spatial_dims=2,
+    learnable=False,
+    frequency_scaling="sqrt"
+)
+
+batch_size, seq_len = 2, 100
+x = torch.randn(batch_size, seq_len, 128)
+
+# Define 2D grid
+grid_shape = (10, 10)
+spacing = (0.5, 0.5)
 
 # Apply rotary spatial embeddings
-q_rot, k_rot = layer(q, k, grid_shape, voxel_size)
-
+x_embedded = embedding(x, spacing, grid_shape)  # Shape: (batch_size, seq_len, 128)
 ```
 
 
