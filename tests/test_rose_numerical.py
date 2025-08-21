@@ -5,7 +5,12 @@ import math
 import pytest
 import torch
 
-from RoSE.rose import RotarySpatialEmbedding, _init_p_nd, _make_log_spaced_frequencies
+from RoSE.rose import (
+    RoSEMultiHeadAttention,
+    RotarySpatialEmbedding,
+    _init_p_nd,
+    _make_log_spaced_frequencies,
+)
 
 
 class TestRotarySpatialEmbedding:
@@ -941,6 +946,200 @@ def test_core_rope_property():
 
     print("✓ Phase difference computation verified!")
     return True
+
+
+class TestPartialRotation:
+    """Test partial rotation functionality with rotary_ratio parameter."""
+
+    @pytest.mark.parametrize("rotary_ratio", [0.0, 0.25, 0.5, 0.75, 1.0])
+    def test_rotary_ratio_values(self, rotary_ratio: float):
+        """Test various rotary_ratio values."""
+        dim, num_heads, spatial_dims = 64, 8, 2
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            rotary_ratio=rotary_ratio,
+            learnable=False,
+        )
+
+        x = torch.randn(2, 16, dim)
+        result = layer(x, spacing=(1.0, 1.0), grid_shape=(4, 4))
+
+        # Check output shape
+        assert (
+            result.shape == x.shape
+        ), f"Shape mismatch for rotary_ratio={rotary_ratio}"
+
+        # Check dimension calculation
+        expected_rotary_dim = (int(dim * rotary_ratio) // (2 * num_heads)) * (
+            2 * num_heads
+        )
+        assert layer.rotary_dim == expected_rotary_dim
+        assert layer.non_rotary_dim == dim - expected_rotary_dim
+
+    def test_default_behavior_preservation(self):
+        """Test that rotary_ratio=1.0 maintains original behavior."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+
+        # Create layers with and without explicit rotary_ratio
+        layer_default = RotarySpatialEmbedding(
+            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+        )
+        layer_explicit = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            rotary_ratio=1.0,
+            learnable=False,
+        )
+
+        # Test with same input
+        x = torch.randn(2, 9, dim)
+        result_default = layer_default(x, spacing=(1.0, 1.0), grid_shape=(3, 3))
+        result_explicit = layer_explicit(x, spacing=(1.0, 1.0), grid_shape=(3, 3))
+
+        torch.testing.assert_close(
+            result_default,
+            result_explicit,
+            msg="Default and explicit rotary_ratio=1.0 should be identical",
+        )
+
+    def test_zero_rotation(self):
+        """Test that rotary_ratio=0.0 returns input unchanged."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            rotary_ratio=0.0,
+            learnable=False,
+        )
+
+        x = torch.randn(2, 9, dim)
+        result = layer(x, spacing=(1.0, 1.0), grid_shape=(3, 3))
+
+        # With zero rotation, output should be identical to input
+        torch.testing.assert_close(
+            x, result, msg="Zero rotation should return input unchanged"
+        )
+
+    def test_non_rotated_part_preservation(self):
+        """Test that non-rotated parts are preserved unchanged."""
+        dim, num_heads, spatial_dims = 64, 8, 2
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            rotary_ratio=0.5,
+            learnable=False,
+        )
+
+        x = torch.randn(2, 16, dim)
+        result = layer(x, spacing=(1.0, 1.0), grid_shape=(4, 4))
+
+        # The non-rotated part should be unchanged
+        rotary_dim = layer.rotary_dim
+        if layer.non_rotary_dim > 0:
+            non_rotated_input = x[..., rotary_dim:]
+            non_rotated_output = result[..., rotary_dim:]
+
+            torch.testing.assert_close(
+                non_rotated_input,
+                non_rotated_output,
+                msg="Non-rotated parts should be preserved",
+            )
+
+    @pytest.mark.parametrize("flatten", [True, False])
+    def test_flatten_parameter_with_partial_rotation(self, flatten: bool):
+        """Test flatten parameter works correctly with partial rotation."""
+        dim, num_heads, spatial_dims = 64, 8, 2
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            rotary_ratio=0.5,
+            learnable=False,
+        )
+
+        x = torch.randn(2, 16, dim)
+        result = layer(x, spacing=(1.0, 1.0), grid_shape=(4, 4), flatten=flatten)
+
+        if flatten:
+            assert result.shape == (2, 16, dim)
+        else:
+            assert result.shape == (2, num_heads, 16, dim // num_heads)
+
+    def test_invalid_rotary_ratio(self):
+        """Test that invalid rotary_ratio values raise errors."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+
+        # Test negative rotary_ratio
+        with pytest.raises(
+            AssertionError, match="rotary_ratio must be between 0.0 and 1.0"
+        ):
+            RotarySpatialEmbedding(
+                dim=dim,
+                num_heads=num_heads,
+                spatial_dims=spatial_dims,
+                rotary_ratio=-0.1,
+            )
+
+        # Test rotary_ratio > 1.0
+        with pytest.raises(
+            AssertionError, match="rotary_ratio must be between 0.0 and 1.0"
+        ):
+            RotarySpatialEmbedding(
+                dim=dim,
+                num_heads=num_heads,
+                spatial_dims=spatial_dims,
+                rotary_ratio=1.1,
+            )
+
+    def test_rotary_dimension_alignment(self):
+        """Test that rotary dimensions are properly aligned with head structure."""
+        # Test case where raw rotary_dim needs adjustment
+        dim, num_heads = 64, 8
+
+        # This should result in rotary_dim being adjusted to maintain head alignment
+        layer = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=2,
+            rotary_ratio=0.3,
+            learnable=False,
+        )
+
+        # Raw calculation: 64 * 0.3 = 19.2 -> 19
+        # Aligned calculation: (19 // (2 * 8)) * (2 * 8) = (19 // 16) * 16 = 1 * 16 = 16
+        expected_rotary_dim = 16
+        assert layer.rotary_dim == expected_rotary_dim
+        assert (
+            layer.rotary_dim % (2 * num_heads) == 0
+        )  # Must be divisible by 2*num_heads
+        assert layer.rotary_dim % 2 == 0  # Must be even
+
+    def test_multihead_attention_partial_rotation(self):
+        """Test RoSEMultiHeadAttention with partial rotation."""
+        dim, num_heads, spatial_dims = 64, 8, 2
+        layer = RoSEMultiHeadAttention(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            rotary_ratio=0.25,
+            learnable=False,
+        )
+
+        batch_size, seq_len = 2, 9
+        q = torch.randn(batch_size, seq_len, dim)
+        k = torch.randn(batch_size, seq_len, dim)
+
+        attn = layer(q, k, q_spacing=(1.0, 1.0), q_grid_shape=(3, 3))
+
+        expected_shape = (batch_size, num_heads, seq_len, seq_len)
+        assert (
+            attn.shape == expected_shape
+        ), f"Expected shape {expected_shape}, got {attn.shape}"
 
 
 if __name__ == "__main__":

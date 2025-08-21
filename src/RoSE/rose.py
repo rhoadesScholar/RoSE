@@ -46,6 +46,7 @@ def _init_p_nd(
 class RotarySpatialEmbedding(nn.Module):
     """
     Rotates input embeddings in 2-D sub-planes, independently per attention group (head).
+    Supports partial rotation where only a subset of the embedding dimension is rotated.
 
     Given:
         x: Tensor of shape (B, N, D)   – input embeddings (D must be even)
@@ -54,9 +55,9 @@ class RotarySpatialEmbedding(nn.Module):
 
     Definitions:
       • H    = num_heads
-      • P    = D // 2               – number of 2-D sub-planes
-      • pos_n, pos_m ∈ ℝᵈ          – coordinates of tokens n and m
-      • ω_{h,p} ∈ ℝᵈ              – frequency vector for head h, plane p
+      • P    = rotary_dim // 2          – number of 2-D sub-planes for rotation
+      • pos_n, pos_m ∈ ℝᵈ              – coordinates of tokens n and m
+      • ω_{h,p} ∈ ℝᵈ                  – frequency vector for head h, plane p
       • cis(θ) = cos(θ) + i·sin(θ)
 
     Angle computation for head h, plane p at position t:
@@ -67,6 +68,18 @@ class RotarySpatialEmbedding(nn.Module):
             ∑_{p=0}^{P-1}
               q[b,h,n,p] · conj(k[b,h,m,p]) · cis( ⟨pos_n − pos_m, ω_{h,p}⟩ )
         ⎤
+
+    Args:
+        dim: Total embedding dimension (must be even and divisible by num_heads)
+        num_heads: Number of attention heads
+        spatial_dims: Number of spatial dimensions (2 for 2D, 3 for 3D, etc.)
+        base_theta: Base frequency for rotary embeddings
+        learnable: Whether frequencies should be learnable parameters
+        init_jitter_std: Standard deviation for frequency initialization jitter
+        frequency_scaling: Scaling strategy for frequencies ("none", "linear", "sqrt", "adaptive")
+        rotary_ratio: Fraction of embedding dimension to apply rotation to (0.0 to 1.0)
+                     When < 1.0, only the first rotary_ratio * dim dimensions are rotated,
+                     the rest are passed through unchanged.
     """
 
     def __init__(
@@ -78,16 +91,33 @@ class RotarySpatialEmbedding(nn.Module):
         learnable: bool = True,
         init_jitter_std: float = 0.02,
         frequency_scaling: str = "sqrt",
+        rotary_ratio: float = 1.0,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         assert dim % 2 == 0, "dim must be even for complex representation"
+        assert 0.0 <= rotary_ratio <= 1.0, "rotary_ratio must be between 0.0 and 1.0"
+
         self.dim = dim
         self.num_heads = num_heads
         self.spatial_dims = spatial_dims
         self.learnable = learnable
+        self.rotary_ratio = rotary_ratio
 
-        num_planes = dim // 2
+        # Calculate dimensions for rotary embedding
+        self.rotary_dim = int(dim * rotary_ratio)
+        # Ensure rotary_dim is even and divisible by num_heads
+        self.rotary_dim = (self.rotary_dim // (2 * num_heads)) * (2 * num_heads)
+        self.non_rotary_dim = dim - self.rotary_dim
+
+        # Validate divisibility of non_rotary_dim by num_heads
+        if self.non_rotary_dim % self.num_heads != 0:
+            raise ValueError(
+                f"non_rotary_dim ({self.non_rotary_dim}) is not divisible by num_heads ({self.num_heads})."
+            )
+
+        # Only create frequencies for the rotary portion
+        num_planes = self.rotary_dim // 2
 
         if frequency_scaling == "none":
             self.rope_theta = base_theta
@@ -113,11 +143,15 @@ class RotarySpatialEmbedding(nn.Module):
         else:
             self.register_buffer("freqs", freqs, persistent=False)
 
-    def _get_complex_split(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.view(
-            *x.shape[:-1], self.num_heads, self.dim // (2 * self.num_heads), 2
+    def _get_complex_split(self, rotary_x: torch.Tensor) -> torch.Tensor:
+        # Only process the rotary portion of the input
+        rotary_x = rotary_x.view(
+            *rotary_x.shape[:-1],
+            self.num_heads,
+            self.rotary_dim // (2 * self.num_heads),
+            2,
         )  # (B,T,H,P,2)
-        return torch.view_as_complex(x)  # (B,T,H,P)
+        return torch.view_as_complex(rotary_x)  # (B,T,H,P)
 
     def forward(
         self,
@@ -126,6 +160,17 @@ class RotarySpatialEmbedding(nn.Module):
         grid_shape: Optional[Tuple[int, ...]] = None,
         flatten: bool = True,
     ) -> torch.Tensor:
+        if self.rotary_dim == 0:
+            # No rotation, return input unchanged
+            if flatten:
+                return x
+            else:
+                return x.view(*x.shape[:-1], self.num_heads, -1).transpose(1, 2)
+
+        # Split input into rotary and non-rotary parts
+        rotary_x = x[..., : self.rotary_dim]  # (B, N, rotary_dim)
+        non_rotary_x = x[..., self.rotary_dim :]  # (B, N, non_rotary_dim)
+
         # Get position tensor
         pos = _init_p_nd(
             grid_shape, spacing=spacing, dtype=x.dtype, device=x.device
@@ -136,25 +181,50 @@ class RotarySpatialEmbedding(nn.Module):
 
         ph_x = ph_x.cos() + 1j * ph_x.sin()  # (N, H, P)
 
-        # Split x into real and imaginary parts, per head/plane
-        x = self._get_complex_split(x)  # (B, N, H, P)
+        # Split rotary part into real and imaginary parts, per head/plane
+        rotary_x_complex = self._get_complex_split(rotary_x)  # (B, N, H, P)
 
         # Apply rotary embeddings
-        x = x * ph_x.unsqueeze(0)  # (B, N, H, P)
+        rotary_x_complex = rotary_x_complex * ph_x.unsqueeze(0)  # (B, N, H, P)
 
-        # Get real part
-        x = torch.view_as_real(x).flatten(-2)  # (B, N, H, D_heads)
+        # Get real part of rotated data
+        rotary_x_real = torch.view_as_real(rotary_x_complex).flatten(
+            -2
+        )  # (B, N, H, rotary_D_heads)
 
         if flatten:
-            # Reshape back to original dimensions
-            return torch.flatten(x, 2)  # (B, N, D)
+            # Reshape rotary part back to original dimensions
+            rotary_result = torch.flatten(rotary_x_real, 2)  # (B, N, rotary_dim)
+
+            # Concatenate rotary and non-rotary parts
+            return torch.cat([rotary_result, non_rotary_x], dim=-1)  # (B, N, D)
         else:
-            return x.transpose(1, 2)  # (B, H, N, D_heads)
+            # Handle non-flattened case
+            if self.non_rotary_dim > 0:
+                # Reshape non-rotary part to match head structure
+                non_rotary_per_head = self.non_rotary_dim // self.num_heads
+                non_rotary_x_heads = non_rotary_x.view(
+                    *non_rotary_x.shape[:-1], self.num_heads, non_rotary_per_head
+                )
+                non_rotary_x_heads = non_rotary_x_heads.transpose(
+                    1, 2
+                )  # (B, H, N, non_rotary_per_head)
+
+                # Combine rotary and non-rotary parts
+                rotary_x_heads = rotary_x_real.transpose(
+                    1, 2
+                )  # (B, H, N, rotary_D_heads)
+                return torch.cat(
+                    [rotary_x_heads, non_rotary_x_heads], dim=-1
+                )  # (B, H, N, D_heads)
+            else:
+                return rotary_x_real.transpose(1, 2)  # (B, H, N, rotary_D_heads)
 
 
 class RoSEMultiHeadAttention(nn.Module):
     """
     Rotates key and query embeddings in 2-D sub-planes, then computes multi-head attention scores.
+    Supports partial rotation where only a subset of the embedding dimension is rotated.
 
     Given:
         q: Tensor of shape (B, N, D)   – query embeddings (D must be even)
@@ -164,9 +234,9 @@ class RoSEMultiHeadAttention(nn.Module):
 
     Definitions:
       • H    = num_heads
-      • P    = D // 2               – number of 2-D sub-planes
-      • pos_n, pos_m ∈ ℝᵈ          – coordinates of tokens n and m
-      • ω_{h,p} ∈ ℝᵈ              – frequency vector for head h, plane p
+      • P    = rotary_dim // 2          – number of 2-D sub-planes for rotation
+      • pos_n, pos_m ∈ ℝᵈ              – coordinates of tokens n and m
+      • ω_{h,p} ∈ ℝᵈ                  – frequency vector for head h, plane p
       • cis(θ) = cos(θ) + i·sin(θ)
 
     Angle computation for head h, plane p at position t:
@@ -177,6 +247,15 @@ class RoSEMultiHeadAttention(nn.Module):
             ∑_{p=0}^{P-1}
               q[b,h,n,p] · conj(k[b,h,m,p]) · cis( ⟨pos_n − pos_m, ω_{h,p}⟩ )
         ⎤
+
+    Args:
+        dim: Total embedding dimension (must be even and divisible by num_heads)
+        num_heads: Number of attention heads
+        spatial_dims: Number of spatial dimensions (2 for 2D, 3 for 3D, etc.)
+        base_theta: Base frequency for rotary embeddings
+        learnable: Whether frequencies should be learnable parameters
+        init_jitter_std: Standard deviation for frequency initialization jitter
+        rotary_ratio: Fraction of embedding dimension to apply rotation to (0.0 to 1.0)
     """
 
     def __init__(
@@ -187,6 +266,7 @@ class RoSEMultiHeadAttention(nn.Module):
         base_theta: float = 1e4,
         learnable: bool = True,
         init_jitter_std: float = 0.02,
+        rotary_ratio: float = 1.0,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -205,6 +285,7 @@ class RoSEMultiHeadAttention(nn.Module):
             "base_theta": base_theta,
             "learnable": learnable,
             "init_jitter_std": init_jitter_std,
+            "rotary_ratio": rotary_ratio,
         }
         self.q_pe = RotarySpatialEmbedding(**pe_kwargs)
         self.k_pe = RotarySpatialEmbedding(**pe_kwargs)
