@@ -95,41 +95,38 @@ class RotarySpatialEmbedding(nn.Module):
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        assert dim % 2 == 0, "dim must be even for complex representation"
+        assert (
+            dim // num_heads % 2 == 0
+        ), "dims_per_head must be even for complex representation"
         assert 0.0 <= rotary_ratio <= 1.0, "rotary_ratio must be between 0.0 and 1.0"
 
         self.dim = dim
         self.num_heads = num_heads
+        self.dims_per_head = dim // num_heads
         self.spatial_dims = spatial_dims
         self.learnable = learnable
         self.rotary_ratio = rotary_ratio
 
         # Calculate dimensions for rotary embedding
-        self.rotary_dim = int(dim * rotary_ratio)
-        # Ensure rotary_dim is even and divisible by num_heads
-        self.rotary_dim = (self.rotary_dim // (2 * num_heads)) * (2 * num_heads)
-        self.non_rotary_dim = dim - self.rotary_dim
-
-        # Validate divisibility of non_rotary_dim by num_heads
-        if self.non_rotary_dim % self.num_heads != 0:
-            raise ValueError(
-                f"non_rotary_dim ({self.non_rotary_dim}) is not divisible by num_heads ({self.num_heads})."
-            )
+        self.rotary_dim = int(self.dims_per_head * rotary_ratio)
+        # Ensure rotary_dim is even
+        self.rotary_dim = (self.rotary_dim // 2) * 2
+        self.non_rotary_dim = self.dims_per_head - self.rotary_dim
 
         # Only create frequencies for the rotary portion
-        num_planes = self.rotary_dim // 2
+        num_planes = (self.rotary_dim * num_heads) // 2
 
         if frequency_scaling == "none":
-            self.rope_theta = base_theta
+            self.rose_theta = base_theta
         elif frequency_scaling == "linear":
-            self.rope_theta = base_theta ** (1 / spatial_dims)
+            self.rose_theta = base_theta ** (1 / spatial_dims)
         elif frequency_scaling == "sqrt":
-            self.rope_theta = base_theta ** (1 / math.sqrt(spatial_dims))
+            self.rose_theta = base_theta ** (1 / math.sqrt(spatial_dims))
         elif frequency_scaling == "adaptive":
-            self.rope_theta = base_theta ** (2.0 / (spatial_dims * dim))
+            self.rose_theta = base_theta ** (2.0 / (spatial_dims * dim))
 
         freqs = _make_log_spaced_frequencies(
-            num_planes, spatial_dims, self.rope_theta
+            num_planes, spatial_dims, self.rose_theta
         )  # (num_planes, spatial_dims)
         freqs = freqs.reshape(num_heads, -1, spatial_dims)  # (H, P, spatial_dims)
 
@@ -145,10 +142,11 @@ class RotarySpatialEmbedding(nn.Module):
 
     def _get_complex_split(self, rotary_x: torch.Tensor) -> torch.Tensor:
         # Only process the rotary portion of the input
+        # rotary_x shape: (B, N, total_rotary_dim) where total_rotary_dim = num_heads * rotary_dim
         rotary_x = rotary_x.view(
             *rotary_x.shape[:-1],
             self.num_heads,
-            self.rotary_dim // (2 * self.num_heads),
+            self.rotary_dim // 2,
             2,
         )  # (B,T,H,P,2)
         return torch.view_as_complex(rotary_x)  # (B,T,H,P)
@@ -167,9 +165,12 @@ class RotarySpatialEmbedding(nn.Module):
             else:
                 return x.view(*x.shape[:-1], self.num_heads, -1).transpose(1, 2)
 
+        # Calculate total rotary dimensions across all heads
+        total_rotary_dim = self.num_heads * self.rotary_dim
+
         # Split input into rotary and non-rotary parts
-        rotary_x = x[..., : self.rotary_dim]  # (B, N, rotary_dim)
-        non_rotary_x = x[..., self.rotary_dim :]  # (B, N, non_rotary_dim)
+        rotary_x = x[..., :total_rotary_dim]  # (B, N, total_rotary_dim)
+        non_rotary_x = x[..., total_rotary_dim:]  # (B, N, total_non_rotary_dim)
 
         # Get position tensor
         pos = _init_p_nd(
@@ -194,7 +195,7 @@ class RotarySpatialEmbedding(nn.Module):
 
         if flatten:
             # Reshape rotary part back to original dimensions
-            rotary_result = torch.flatten(rotary_x_real, 2)  # (B, N, rotary_dim)
+            rotary_result = torch.flatten(rotary_x_real, 2)  # (B, N, total_rotary_dim)
 
             # Concatenate rotary and non-rotary parts
             return torch.cat([rotary_result, non_rotary_x], dim=-1)  # (B, N, D)
@@ -202,23 +203,20 @@ class RotarySpatialEmbedding(nn.Module):
             # Handle non-flattened case
             if self.non_rotary_dim > 0:
                 # Reshape non-rotary part to match head structure
-                non_rotary_per_head = self.non_rotary_dim // self.num_heads
                 non_rotary_x_heads = non_rotary_x.view(
-                    *non_rotary_x.shape[:-1], self.num_heads, non_rotary_per_head
+                    *non_rotary_x.shape[:-1], self.num_heads, self.non_rotary_dim
                 )
                 non_rotary_x_heads = non_rotary_x_heads.transpose(
                     1, 2
                 )  # (B, H, N, non_rotary_per_head)
 
                 # Combine rotary and non-rotary parts
-                rotary_x_heads = rotary_x_real.transpose(
-                    1, 2
-                )  # (B, H, N, rotary_D_heads)
+                rotary_x_heads = rotary_x_real.transpose(1, 2)  # (B, H, N, rotary_dim)
                 return torch.cat(
                     [rotary_x_heads, non_rotary_x_heads], dim=-1
                 )  # (B, H, N, D_heads)
             else:
-                return rotary_x_real.transpose(1, 2)  # (B, H, N, rotary_D_heads)
+                return rotary_x_real.transpose(1, 2)  # (B, H, N, rotary_dim)
 
 
 class RoSEMultiHeadAttention(nn.Module):

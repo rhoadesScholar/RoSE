@@ -46,7 +46,10 @@ class TestRotarySpatialEmbedding:
             RotarySpatialEmbedding(dim=65, num_heads=8)
 
         # Odd dimension
-        with pytest.raises(AssertionError, match="dim must be even"):
+        with pytest.raises(
+            AssertionError,
+            match="dims_per_head must be even for complex representation",
+        ):
             RotarySpatialEmbedding(dim=63, num_heads=7)
 
     @pytest.mark.parametrize(
@@ -79,7 +82,7 @@ class TestRotarySpatialEmbedding:
         elif frequency_scaling == "adaptive":
             expected_theta = base_theta ** (2.0 / (spatial_dims * dim))
 
-        assert abs(layer.rope_theta - expected_theta) < 1e-6
+        assert abs(layer.rose_theta - expected_theta) < 1e-6
 
     def test_learnable_vs_fixed_frequencies(self):
         """Test difference between learnable and fixed frequencies."""
@@ -120,8 +123,14 @@ class TestRotarySpatialEmbedding:
         )
 
         # Base frequencies should be the same before jitter
+        # Calculate per-head rotary dimension and number of planes
+        dims_per_head = dim // num_heads
+        rotary_dim_per_head = int(dims_per_head * 1.0)  # rotary_ratio = 1.0
+        rotary_dim_per_head = (rotary_dim_per_head // 2) * 2  # ensure even
+        num_planes = (rotary_dim_per_head * num_heads) // 2
+
         base_freqs = _make_log_spaced_frequencies(
-            dim // 2, spatial_dims, layer_no_jitter.rope_theta
+            num_planes, spatial_dims, layer_no_jitter.rose_theta
         )
         base_freqs = base_freqs.reshape(num_heads, -1, spatial_dims)
 
@@ -971,12 +980,15 @@ class TestPartialRotation:
             result.shape == x.shape
         ), f"Shape mismatch for rotary_ratio={rotary_ratio}"
 
-        # Check dimension calculation
-        expected_rotary_dim = (int(dim * rotary_ratio) // (2 * num_heads)) * (
-            2 * num_heads
-        )
-        assert layer.rotary_dim == expected_rotary_dim
-        assert layer.non_rotary_dim == dim - expected_rotary_dim
+        # Check dimension calculation (per head)
+        dims_per_head = dim // num_heads
+        expected_rotary_dim_per_head = int(dims_per_head * rotary_ratio)
+        # Ensure even for complex representation
+        expected_rotary_dim_per_head = (expected_rotary_dim_per_head // 2) * 2
+        expected_non_rotary_dim_per_head = dims_per_head - expected_rotary_dim_per_head
+
+        assert layer.rotary_dim == expected_rotary_dim_per_head
+        assert layer.non_rotary_dim == expected_non_rotary_dim_per_head
 
     def test_default_behavior_preservation(self):
         """Test that rotary_ratio=1.0 maintains original behavior."""
@@ -1039,10 +1051,10 @@ class TestPartialRotation:
         result = layer(x, spacing=(1.0, 1.0), grid_shape=(4, 4))
 
         # The non-rotated part should be unchanged
-        rotary_dim = layer.rotary_dim
+        total_rotary_dim = layer.num_heads * layer.rotary_dim
         if layer.non_rotary_dim > 0:
-            non_rotated_input = x[..., rotary_dim:]
-            non_rotated_output = result[..., rotary_dim:]
+            non_rotated_input = x[..., total_rotary_dim:]
+            non_rotated_output = result[..., total_rotary_dim:]
 
             torch.testing.assert_close(
                 non_rotated_input,
@@ -1110,13 +1122,16 @@ class TestPartialRotation:
             learnable=False,
         )
 
-        # Raw calculation: 64 * 0.3 = 19.2 -> 19
-        # Aligned calculation: (19 // (2 * 8)) * (2 * 8) = (19 // 16) * 16 = 1 * 16 = 16
-        expected_rotary_dim = 16
-        assert layer.rotary_dim == expected_rotary_dim
-        assert (
-            layer.rotary_dim % (2 * num_heads) == 0
-        )  # Must be divisible by 2*num_heads
+        # Raw calculation: dims_per_head * 0.3 = 8 * 0.3 = 2.4 -> 2
+        # Ensure even: 2 // 2 * 2 = 2
+        dims_per_head = dim // num_heads  # 64 // 8 = 8
+        expected_rotary_dim_per_head = int(dims_per_head * 0.3)  # int(8 * 0.3) = 2
+        expected_rotary_dim_per_head = (
+            expected_rotary_dim_per_head // 2
+        ) * 2  # (2 // 2) * 2 = 2
+
+        assert layer.rotary_dim == expected_rotary_dim_per_head
+        assert layer.rotary_dim % 2 == 0  # Must be even for complex representation
         assert layer.rotary_dim % 2 == 0  # Must be even
 
     def test_multihead_attention_partial_rotation(self):
