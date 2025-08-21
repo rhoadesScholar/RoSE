@@ -76,10 +76,10 @@ class RotarySpatialEmbedding(nn.Module):
         base_theta: Base frequency for rotary embeddings
         learnable: Whether frequencies should be learnable parameters
         init_jitter_std: Standard deviation for frequency initialization jitter
-        frequency_scaling: Scaling strategy for frequencies ("none", "linear", "sqrt", "adaptive")
         rotary_ratio: Fraction of embedding dimension to apply rotation to (0.0 to 1.0)
                      When < 1.0, only the first rotary_ratio * dim dimensions are rotated,
                      the rest are passed through unchanged.
+        frequency_scaling: Scaling strategy for frequencies ("none", "linear", "sqrt", "adaptive")
     """
 
     def __init__(
@@ -104,8 +104,8 @@ class RotarySpatialEmbedding(nn.Module):
         self.num_heads = num_heads
         self.dims_per_head = dim // num_heads
         self.spatial_dims = spatial_dims
-        self.learnable = learnable
         self.rotary_ratio = rotary_ratio
+        self.learnable = learnable
 
         # Calculate dimensions for rotary embedding
         self.rotary_dim = int(self.dims_per_head * rotary_ratio)
