@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from RoSE.rose import (
-    RoSEMultiHeadAttention,
+    RoSEMultiHeadCrossAttention,
     RotarySpatialEmbedding,
     _init_p_nd,
     _make_log_spaced_frequencies,
@@ -1137,7 +1137,7 @@ class TestPartialRotation:
     def test_multihead_attention_partial_rotation(self):
         """Test RoSEMultiHeadAttention with partial rotation."""
         dim, num_heads, spatial_dims = 64, 8, 2
-        layer = RoSEMultiHeadAttention(
+        layer = RoSEMultiHeadCrossAttention(
             dim=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,

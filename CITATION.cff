@@ -5,8 +5,8 @@ authors:
   - family-names: Rhoades
     given-names: Jeff
     orcid: https://orcid.org/0000-0001-5077-2533
-version: 2025.8.21.2030
-date-released: 2025-08-21
+version: 2025.8.22.2208
+date-released: 2025-08-22
 # doi: 10.5281/zenodo.1234567  # optional, if you have a Zenodo DOI
 repository-code: https://github.com/rhoadesScholar/RoSE
 license: BSD-3-Clause

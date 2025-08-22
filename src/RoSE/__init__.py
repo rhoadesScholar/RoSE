@@ -15,12 +15,17 @@ except PackageNotFoundError:
 __author__ = "Jeff Rhoades"
 __email__ = "rhoadesj@hhmi.org"
 
-from .rose import RoSEMultiHeadAttention, RotarySpatialEmbedding
+from .rose import (
+    MultiRes_RoSE_TransformerBlock,
+    RoSEMultiHeadCrossAttention,
+    RotarySpatialEmbedding,
+)
 
 __all__ = [
     "__version__",
     "__author__",
     "__email__",
-    "RoSEMultiHeadAttention",
+    "RoSEMultiHeadCrossAttention",
     "RotarySpatialEmbedding",
+    "MultiRes_RoSE_TransformerBlock",
 ]
