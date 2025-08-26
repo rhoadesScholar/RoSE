@@ -86,7 +86,7 @@ In many applications, such as microscopy or 3D point clouds, the coordinates are
 ### From PyPI
 
 ```bash
-pip install rose-spatial-embeddings
+pip install rotary-spatial-embeddings
 ```
 
 ### From source
@@ -101,10 +101,10 @@ pip install git+https://github.com/rhoadesScholar/RoSE.git
 
 ```python
 import torch
-from RoSE import RoSEMultiHeadAttention
+from RoSE import RoSEMultiHeadCrossAttention
 
 # Create RoSE multi-head attention layer
-layer = RoSEMultiHeadAttention(
+layer = RoSEMultiHeadCrossAttention(
     dim=128,
     num_heads=8,
     spatial_dims=3,
@@ -207,6 +207,188 @@ x_embedded = embedding(x, spacing, grid_shape)  # Shape: (batch_size, seq_len, 1
   - `"sqrt"`: Square root scaling with spatial dimensions
   - `"adaptive"`: Adaptive scaling based on spatial dims and embedding dim
 
+## Advanced Examples
+
+### Working with 3D Medical Imaging Data
+
+```python
+import torch
+from RoSE import RotarySpatialEmbedding
+
+# Example: 3D CT scan with anisotropic voxel spacing
+batch_size, seq_len = 1, 8000  # 20x20x20 volume flattened
+embedding_dim = 256
+num_heads = 8
+
+# Create embedding layer for 3D medical data
+embedding = RotarySpatialEmbedding(
+    dim=embedding_dim,
+    num_heads=num_heads,
+    spatial_dims=3,
+    learnable=True,
+    rotary_ratio=0.75,  # Rotate 75% of dimensions
+    frequency_scaling="adaptive"
+)
+
+# Define anisotropic voxel spacing (common in medical imaging)
+grid_shape = (20, 20, 20)
+voxel_spacing = (0.5, 0.5, 2.0)  # 0.5mm x 0.5mm x 2mm
+
+# Your input features (e.g., from a CNN backbone)
+x = torch.randn(batch_size, seq_len, embedding_dim)
+
+# Apply spatial embeddings
+x_with_spatial = embedding(x, voxel_spacing, grid_shape)
+print(f"Input shape: {x.shape}")
+print(f"Output shape: {x_with_spatial.shape}")
+```
+
+### Multi-Scale Microscopy Analysis
+
+```python
+import torch
+from RoSE import RoSEMultiHeadCrossAttention
+
+# Example: Multi-scale microscopy with different zoom levels
+def create_multiscale_attention():
+    return RoSEMultiHeadCrossAttention(
+        dim=512,
+        num_heads=16,
+        spatial_dims=2,
+        learnable=True,
+        base_theta=1e4,
+        rotary_ratio=1.0  # Full rotation for spatial awareness
+    )
+
+# Different scales: 10x, 40x, 100x magnification
+scales_and_spacings = [
+    ((100, 100), (1.0, 1.0)),      # 10x: 1μm/pixel
+    ((200, 200), (0.25, 0.25)),    # 40x: 0.25μm/pixel
+    ((400, 400), (0.1, 0.1)),      # 100x: 0.1μm/pixel
+]
+
+attention_layer = create_multiscale_attention()
+
+for i, (grid_shape, spacing) in enumerate(scales_and_spacings):
+    seq_len = grid_shape[0] * grid_shape[1]
+
+    # Simulate features from different magnifications
+    q = torch.randn(1, seq_len, 512)
+    k = torch.randn(1, seq_len, 512)
+
+    # Compute attention with spatial awareness
+    attn_scores = attention_layer(q, k, spacing, grid_shape)
+
+    print(f"Scale {i+1}: {grid_shape} grid, {spacing} spacing")
+    print(f"Attention shape: {attn_scores.shape}\n")
+```
+
+### Custom Coordinate Systems
+
+```python
+import torch
+from RoSE import RotarySpatialEmbedding
+
+# Example: Geographic coordinate system (lat/lon/elevation)
+class GeospatialEmbedding(torch.nn.Module):
+    def __init__(self, dim, num_heads):
+        super().__init__()
+        self.spatial_embedding = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=3,  # lat, lon, elevation
+            learnable=True,
+            frequency_scaling="adaptive"
+        )
+
+    def forward(self, x, coordinates):
+        """
+        Args:
+            x: Features [B, N, D]
+            coordinates: [B, N, 3] tensor with [lat, lon, elevation]
+        """
+        # Normalize coordinates to reasonable scales
+        lat_scale, lon_scale, elev_scale = 1/90, 1/180, 1/1000
+        normalized_coords = coordinates * torch.tensor([lat_scale, lon_scale, elev_scale])
+
+        # Convert to grid format (this is a simplified example)
+        # In practice, you'd need proper coordinate-to-grid mapping
+        batch_size, seq_len, _ = coordinates.shape
+        grid_size = int(seq_len ** (1/3)) if seq_len ** (1/3) == int(seq_len ** (1/3)) else 10
+        grid_shape = (grid_size, grid_size, grid_size)
+        spacing = (lat_scale, lon_scale, elev_scale)
+
+        return self.spatial_embedding(x, spacing, grid_shape)
+
+# Usage
+geo_embedding = GeospatialEmbedding(dim=256, num_heads=8)
+features = torch.randn(2, 1000, 256)
+coordinates = torch.randn(2, 1000, 3)  # Random lat/lon/elevation
+result = geo_embedding(features, coordinates)
+```
+
+### Integration with Transformers
+
+```python
+import torch
+import torch.nn as nn
+from RoSE import RotarySpatialEmbedding
+
+class SpatialTransformerBlock(nn.Module):
+    """Transformer block with spatial awareness via RoSE."""
+
+    def __init__(self, dim, num_heads, spatial_dims=2):
+        super().__init__()
+        self.spatial_embedding = RotarySpatialEmbedding(
+            dim=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=True
+        )
+
+        self.attention = nn.MultiheadAttention(
+            embed_dim=dim,
+            num_heads=num_heads,
+            batch_first=True
+        )
+
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, 4 * dim),
+            nn.GELU(),
+            nn.Linear(4 * dim, dim)
+        )
+
+    def forward(self, x, spacing, grid_shape):
+        # Apply spatial embeddings
+        x_spatial = self.spatial_embedding(x, spacing, grid_shape)
+
+        # Self-attention with spatial embeddings
+        attn_out, _ = self.attention(x_spatial, x_spatial, x_spatial)
+        x = self.norm1(x + attn_out)
+
+        # MLP
+        mlp_out = self.mlp(x)
+        x = self.norm2(x + mlp_out)
+
+        return x
+
+# Example usage
+transformer = SpatialTransformerBlock(dim=256, num_heads=8, spatial_dims=2)
+x = torch.randn(4, 100, 256)  # Batch of sequences
+result = transformer(x, spacing=(1.0, 1.0), grid_shape=(10, 10))
+print(f"Transformer output shape: {result.shape}")
+```
+
+## Tips and Best Practices
+
+1. **Voxel Spacing**: Always provide real-world spacing when available - it significantly improves spatial understanding
+2. **Rotary Ratio**: Start with `rotary_ratio=1.0` for maximum spatial awareness, then experiment with lower values for efficiency
+3. **Learnable Frequencies**: Set `learnable=True` for fine-tuning on your specific spatial domain
+4. **Frequency Scaling**: Use `"adaptive"` scaling for most applications, `"sqrt"` for simpler cases
+5. **Grid Shape**: Ensure your sequence length matches `prod(grid_shape)` for proper spatial mapping
 
 ## License
 
