@@ -159,7 +159,7 @@ class TestRotarySpatialEmbedding:
         grid_shape = (shape,) * spatial_dims
         spacing = tuple([1.0] * spatial_dims)
 
-        output = layer(x, spacing, grid_shape)
+        output = layer(x, spacing, grid_shape, flatten=True)
         assert output.shape == (batch_size, seq_len, dim)
 
     def test_complex_split_functionality(self):
@@ -252,11 +252,11 @@ class TestRotarySpatialEmbedding:
 
         # Without flattening - based on the implementation: (B, H, N, D_heads)
         output_unflat = layer(x, spacing, grid_shape, flatten=False)
-        expected_shape = (batch_size, num_heads, seq_len, dim // num_heads)
+        expected_shape = (batch_size, seq_len, num_heads, dim // num_heads)
         assert output_unflat.shape == expected_shape
 
         # Flattened version should be equivalent to manually flattening
-        output_manual_flat = output_unflat.transpose(1, 2).flatten(-2)
+        output_manual_flat = output_unflat.flatten(-2)
         torch.testing.assert_close(output_flat, output_manual_flat)
 
     @pytest.mark.parametrize("spatial_dims", [2, 3, 4])
@@ -297,12 +297,12 @@ class TestRotarySpatialEmbedding:
 
         # Test with minimum valid inputs
         x_min = torch.randn(1, 1, dim)
-        output_min = layer(x_min, (1.0, 1.0), (1, 1))
+        output_min = layer(x_min, (1.0, 1.0), (1, 1), flatten=True)
         assert output_min.shape == (1, 1, dim)
 
         # Test with larger grids
         x_large = torch.randn(1, 100, dim)
-        output_large = layer(x_large, (0.1, 0.1), (10, 10))
+        output_large = layer(x_large, (0.1, 0.1), (10, 10), flatten=True)
         assert output_large.shape == (1, 100, dim)
 
     def test_rotary_embedding_properties(self):
@@ -323,7 +323,7 @@ class TestRotarySpatialEmbedding:
         spacing = (1.0, 1.0)
 
         # Apply embedding
-        x_rot = layer(x, spacing, grid_shape)
+        x_rot = layer(x, spacing, grid_shape, flatten=True)
 
         # Test magnitude preservation (rotations should preserve norms)
         original_norms = torch.norm(x, dim=-1)
@@ -387,15 +387,15 @@ class TestRotarySpatialEmbedding:
 
         # Test with identical vectors at different positions
         x = torch.ones(batch_size, seq_len, dim)
-        x_rot = layer(x, spacing, grid_shape, flatten=False)  # (B, H, N, D_heads)
+        x_rot = layer(x, spacing, grid_shape, flatten=False)  # (B, N, H, D_heads)
 
         # Different positions should have different embeddings due to rotation
         # Check that positions (0,0) and (1,1) have different embeddings
         pos_00_idx = 0  # First position in grid
         pos_11_idx = 5  # Position at (1,1) in 4x4 grid (row-major: 1*4 + 1 = 5)
 
-        embedding_00 = x_rot[0, :, pos_00_idx]  # (H, D_heads)
-        embedding_11 = x_rot[0, :, pos_11_idx]  # (H, D_heads)
+        embedding_00 = x_rot[0, pos_00_idx]  # (H, D_heads)
+        embedding_11 = x_rot[0, pos_11_idx]  # (H, D_heads)
 
         # They should be different due to different rotations
         assert not torch.allclose(embedding_00, embedding_11, atol=1e-6)
@@ -439,7 +439,7 @@ class TestRotarySpatialEmbedding:
         spacing = (1.0, 1.0)
 
         x = torch.randn(batch_size, seq_len, dim)
-        output = layer(x, spacing, grid_shape)
+        output = layer(x, spacing, grid_shape, flatten=True)
 
         assert output.shape == (batch_size, seq_len, dim)
         # Check that output is not just zeros or identical to input
@@ -734,7 +734,7 @@ class TestRoSENumericalProperties:
         original_norm = torch.norm(x, dim=-1)  # (B, N)
 
         # Apply rotary embedding
-        x_rotated = rose_layer(x, spacing, grid_shape)
+        x_rotated = rose_layer(x, spacing, grid_shape, flatten=True)
         rotated_norm = torch.norm(x_rotated, dim=-1)  # (B, N)
 
         # Magnitudes should be preserved
@@ -973,7 +973,7 @@ class TestPartialRotation:
         )
 
         x = torch.randn(2, 16, dim)
-        result = layer(x, spacing=(1.0, 1.0), grid_shape=(4, 4))
+        result = layer(x, spacing=(1.0, 1.0), grid_shape=(4, 4), flatten=True)
 
         # Check output shape
         assert (
@@ -981,18 +981,21 @@ class TestPartialRotation:
         ), f"Shape mismatch for rotary_ratio={rotary_ratio}"
 
         # Check dimension calculation (per head)
-        dims_per_head = dim // num_heads
-        expected_rotary_dim_per_head = int(dims_per_head * rotary_ratio)
+        expected_rotary_dim = int(dim * rotary_ratio)
         # Ensure even for complex representation
-        expected_rotary_dim_per_head = (expected_rotary_dim_per_head // 2) * 2
-        expected_non_rotary_dim_per_head = dims_per_head - expected_rotary_dim_per_head
+        expected_rotary_dim = (expected_rotary_dim // 2) * 2
+        # Ensure divisibility by num_heads
+        expected_rotary_dim = (expected_rotary_dim // num_heads) * num_heads
+        expected_non_rotary_dim = dim - expected_rotary_dim
 
-        assert layer.rotary_dim == expected_rotary_dim_per_head
-        assert layer.non_rotary_dim == expected_non_rotary_dim_per_head
+        assert layer.rotary_dim == expected_rotary_dim
+        assert layer.non_rotary_dim == expected_non_rotary_dim
 
     def test_default_behavior_preservation(self):
         """Test that rotary_ratio=1.0 maintains original behavior."""
         dim, num_heads, spatial_dims = 32, 4, 2
+        batch_size, shape = 2, 3
+        seq_len = shape**spatial_dims
 
         # Create layers with and without explicit rotary_ratio
         layer_default = RotarySpatialEmbedding(
@@ -1007,9 +1010,11 @@ class TestPartialRotation:
         )
 
         # Test with same input
-        x = torch.randn(2, 9, dim)
-        result_default = layer_default(x, spacing=(1.0, 1.0), grid_shape=(3, 3))
-        result_explicit = layer_explicit(x, spacing=(1.0, 1.0), grid_shape=(3, 3))
+        x = torch.randn(batch_size, seq_len, dim)
+        result_default = layer_default(x, spacing=(1.0, 1.0), grid_shape=(shape, shape))
+        result_explicit = layer_explicit(
+            x, spacing=(1.0, 1.0), grid_shape=(shape, shape)
+        )
 
         torch.testing.assert_close(
             result_default,
@@ -1029,7 +1034,7 @@ class TestPartialRotation:
         )
 
         x = torch.randn(2, 9, dim)
-        result = layer(x, spacing=(1.0, 1.0), grid_shape=(3, 3))
+        result = layer(x, spacing=(1.0, 1.0), grid_shape=(3, 3), flatten=True)
 
         # With zero rotation, output should be identical to input
         torch.testing.assert_close(
@@ -1048,7 +1053,7 @@ class TestPartialRotation:
         )
 
         x = torch.randn(2, 16, dim)
-        result = layer(x, spacing=(1.0, 1.0), grid_shape=(4, 4))
+        result = layer(x, spacing=(1.0, 1.0), grid_shape=(4, 4), flatten=True)
 
         # The non-rotated part should be unchanged
         total_rotary_dim = layer.num_heads * layer.rotary_dim
@@ -1066,6 +1071,7 @@ class TestPartialRotation:
     def test_flatten_parameter_with_partial_rotation(self, flatten: bool):
         """Test flatten parameter works correctly with partial rotation."""
         dim, num_heads, spatial_dims = 64, 8, 2
+        batch_size, seq_len = 2, 16
         layer = RotarySpatialEmbedding(
             dim=dim,
             num_heads=num_heads,
@@ -1074,13 +1080,13 @@ class TestPartialRotation:
             learnable=False,
         )
 
-        x = torch.randn(2, 16, dim)
+        x = torch.randn(batch_size, seq_len, dim)
         result = layer(x, spacing=(1.0, 1.0), grid_shape=(4, 4), flatten=flatten)
 
         if flatten:
-            assert result.shape == (2, 16, dim)
+            assert result.shape == (batch_size, seq_len, dim)
         else:
-            assert result.shape == (2, num_heads, 16, dim // num_heads)
+            assert result.shape == (batch_size, seq_len, num_heads, dim // num_heads)
 
     def test_invalid_rotary_ratio(self):
         """Test that invalid rotary_ratio values raise errors."""
@@ -1125,10 +1131,13 @@ class TestPartialRotation:
         # Raw calculation: dims_per_head * 0.3 = 8 * 0.3 = 2.4 -> 2
         # Ensure even: 2 // 2 * 2 = 2
         dims_per_head = dim // num_heads  # 64 // 8 = 8
-        expected_rotary_dim_per_head = int(dims_per_head * 0.3)  # int(8 * 0.3) = 2
+        expected_rotary_dim_per_head = int(dim * 0.3)  # int(8 * 0.3) = 2
         expected_rotary_dim_per_head = (
             expected_rotary_dim_per_head // 2
         ) * 2  # (2 // 2) * 2 = 2
+        expected_rotary_dim_per_head = (
+            expected_rotary_dim_per_head // dims_per_head
+        ) * dims_per_head
 
         assert layer.rotary_dim == expected_rotary_dim_per_head
         assert layer.rotary_dim % 2 == 0  # Must be even for complex representation

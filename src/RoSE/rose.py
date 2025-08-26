@@ -110,115 +110,161 @@ class RotarySpatialEmbedding(nn.Module):
         self.learnable = learnable
 
         # Calculate dimensions for rotary embedding
-        self.rotary_dim = int(self.dims_per_head * rotary_ratio)
-        # Ensure rotary_dim is even
+        self.rotary_dim = int(self.dim * rotary_ratio)
+
+        # Ensure rotary_dim is even and divisible by num_heads
+        self.rotary_dim = (self.rotary_dim // self.dims_per_head) * self.dims_per_head
         self.rotary_dim = (self.rotary_dim // 2) * 2
-        self.non_rotary_dim = self.dims_per_head - self.rotary_dim
 
-        # Only create frequencies for the rotary portion
-        num_planes = (self.rotary_dim * num_heads) // 2
+        # Ensure rotary_dim is divisible by num_heads
+        self.non_rotary_dim = self.dim - self.rotary_dim
+        assert (
+            self.non_rotary_dim % self.dims_per_head == 0
+        ), "non_rotary_dim must be divisible by dims_per_head. suggest changing rotary_ratio"
 
-        if frequency_scaling == "none":
-            self.rose_theta = base_theta
-        elif frequency_scaling == "linear":
-            self.rose_theta = base_theta ** (1 / spatial_dims)
-        elif frequency_scaling == "sqrt":
-            self.rose_theta = base_theta ** (1 / math.sqrt(spatial_dims))
-        elif frequency_scaling == "adaptive":
-            self.rose_theta = base_theta ** (2.0 / (spatial_dims * dim))
+        if self.rotary_dim > 0:
+            # Calculate total rotary heads
+            self.num_rotary_heads = int(self.rotary_dim // self.dims_per_head)
 
-        freqs = _make_log_spaced_frequencies(
-            num_planes, spatial_dims, self.rose_theta
-        )  # (num_planes, spatial_dims)
-        freqs = freqs.reshape(num_heads, -1, spatial_dims)  # (H, P, spatial_dims)
+            # Only create frequencies for the rotary portion
+            self.num_rotary_planes = self.dims_per_head // 2
 
-        if learnable:
-            if init_jitter_std > 0:
-                eps = torch.randn_like(freqs) * init_jitter_std
-                freqs = torch.exp(torch.clamp(freqs.log() + eps, min=-10, max=10))
-            self.freqs = nn.Parameter(
-                freqs, requires_grad=True
-            )  # learned per head/plane
-        else:
-            self.register_buffer("freqs", freqs, persistent=False)
+            if frequency_scaling == "none":
+                self.rose_theta = base_theta
+            elif frequency_scaling == "linear":
+                self.rose_theta = base_theta ** (1 / spatial_dims)
+            elif frequency_scaling == "sqrt":
+                self.rose_theta = base_theta ** (1 / math.sqrt(spatial_dims))
+            elif frequency_scaling == "adaptive":
+                self.rose_theta = base_theta ** (2.0 / (spatial_dims * dim))
+
+            freqs = _make_log_spaced_frequencies(
+                self.num_rotary_planes * self.num_rotary_heads,
+                spatial_dims,
+                self.rose_theta,
+            )  # (num_planes, spatial_dims)
+            freqs = freqs.reshape(
+                self.num_rotary_heads, -1, spatial_dims
+            )  # (H, P, spatial_dims)
+
+            if learnable:
+                if init_jitter_std > 0:
+                    eps = torch.randn_like(freqs) * init_jitter_std
+                    freqs = torch.exp(torch.clamp(freqs.log() + eps, min=-10, max=10))
+                self.freqs = nn.Parameter(
+                    freqs, requires_grad=True
+                )  # learned per head/plane
+            else:
+                self.register_buffer("freqs", freqs, persistent=False)
 
     def _get_complex_split(self, rotary_x: torch.Tensor) -> torch.Tensor:
-        # Only process the rotary portion of the input
-        # rotary_x shape: (B, N, total_rotary_dim) where total_rotary_dim = num_heads * rotary_dim
+        # rotary_x shape: (B, N, H, dims_per_head)
         rotary_x = rotary_x.view(
-            *rotary_x.shape[:-1],
-            self.num_heads,
-            self.rotary_dim // 2,
+            *rotary_x.shape[:2],
+            self.num_rotary_heads,
+            self.num_rotary_planes,
             2,
-        )  # (B,T,H,P,2)
-        return torch.view_as_complex(rotary_x)  # (B,T,H,P)
+        )  # (B,N,H,P,2)
+        return torch.view_as_complex(rotary_x)  # (B,N,H,P)
+
+    def ensure_input_shape(self, x: torch.Tensor):
+        # If input is not already reshaped into heads, do it now
+        if x.dim() == 3:
+            B, N, D = x.shape
+            assert D == self.dim or D == self.rotary_dim or D == self.non_rotary_dim
+            x = x.reshape(B, N, -1, self.dims_per_head)
+        elif x.dim() == 4:
+            B, N, H, D_head = x.shape
+            if (
+                H != self.num_heads
+                and H != self.num_rotary_heads
+                and H != (self.num_rotary_heads - self.num_heads)
+            ):
+                x = x.transpose(1, 2)
+                B, N, H, D_head = x.shape
+            assert (
+                D_head == self.dims_per_head
+            ), f"Expected {self.dims_per_head}, got {D_head}"
+        return x
 
     def forward(
         self,
         x: torch.Tensor,  # (B, N, D)
         spacing: Tuple[float, ...],
         grid_shape: Optional[Tuple[int, ...]] = None,
-        flatten: bool = True,
+        flatten: bool = False,
     ) -> torch.Tensor:
+        """
+        Forward pass for the RoSE layer.
+
+        Rotates the input tensor and applies the RoSE mechanism. By default, the input is reshaped and returned split by heads, as [B, N, H, dims_per_head]. Pass `flatten=True` to return the output as [B, N, D].
+        """
         if self.rotary_dim == 0:
+            x = self.ensure_input_shape(x)  # --> [B, N, H, dims_per_head]
             # No rotation, return input unchanged
             if flatten:
-                return x
+                return x.flatten(2)
             else:
-                return x.view(*x.shape[:-1], self.num_heads, -1).transpose(1, 2)
-
-        # Calculate total rotary dimensions across all heads
-        total_rotary_dim = self.num_heads * self.rotary_dim
+                return x
 
         # Split input into rotary and non-rotary parts
-        rotary_x = x[..., :total_rotary_dim]  # (B, N, total_rotary_dim)
-        non_rotary_x = x[..., total_rotary_dim:]  # (B, N, total_non_rotary_dim)
+        if x.dim() == 3:
+            rotary_x = x[..., : self.rotary_dim]  # (B, N, rotary_dim)
+            non_rotary_x = x[..., self.rotary_dim :]  # (B, N, non_rotary_dim)
+        elif x.dim() == 4:
+            # (B, N, rotary_heads, dims_per_head)
+            rotary_x = x[..., : self.num_rotary_heads, :]
+            # (B, N, non_rotary_heads, dims_per_head)
+            non_rotary_x = x[..., self.num_rotary_heads :, :]
+        else:
+            raise ValueError(
+                f"Unsupported input shape. Expected 3D or 4D tensor of shape [B, N, D] or [B, N, H, D_head], got {x.dim()}D."
+            )
 
-        # Get position tensor
-        pos = _init_p_nd(
-            grid_shape, spacing=spacing, dtype=x.dtype, device=x.device
-        )  # (N, spatial_dims)
-
-        # Get phase vectors
-        ph_x = torch.einsum("td,hpd->thp", pos, self.freqs)  # (N, H, P)
-
-        ph_x = ph_x.cos() + 1j * ph_x.sin()  # (N, H, P)
+        # --> [B, N, rotary_heads, dims_per_head]
+        rotary_x = self.ensure_input_shape(rotary_x)
+        if self.rotary_dim < self.dim:
+            non_rotary_x = self.ensure_input_shape(non_rotary_x)
+            # non_rotary_x shape: (B, N, non_rotary_heads, dims_per_head)
 
         # Split rotary part into real and imaginary parts, per head/plane
-        rotary_x_complex = self._get_complex_split(rotary_x)  # (B, N, H, P)
+        rotary_x = self._get_complex_split(rotary_x)  # (B, N, rotary_heads, P)
+
+        # Get position tensor
+        # (N, spatial_dims)
+        pos = _init_p_nd(grid_shape, spacing=spacing, dtype=x.dtype, device=x.device)
+
+        # Get phase vectors
+        ph_x = torch.einsum("td,hpd->thp", pos, self.freqs)  # (N, rotary_heads, P)
+
+        ph_x = ph_x.cos() + 1j * ph_x.sin()  # (N, rotary_heads, P)
 
         # Apply rotary embeddings
-        rotary_x_complex = rotary_x_complex * ph_x.unsqueeze(0)  # (B, N, H, P)
+        # (B, N, rotary_heads, P)
+        rotary_x = rotary_x * ph_x.unsqueeze(0)
 
         # Get real part of rotated data
-        rotary_x_real = torch.view_as_real(rotary_x_complex).flatten(
-            -2
-        )  # (B, N, H, rotary_D_heads)
+        # (B, N, rotary_heads, dims_per_head)
+        rotary_x = torch.view_as_real(rotary_x).flatten(-2)
 
         if flatten:
             # Reshape rotary part back to original dimensions
-            rotary_result = torch.flatten(rotary_x_real, 2)  # (B, N, total_rotary_dim)
+            rotary_result = torch.flatten(rotary_x, 2)  # (B, N, total_rotary_dim)
 
-            # Concatenate rotary and non-rotary parts
-            return torch.cat([rotary_result, non_rotary_x], dim=-1)  # (B, N, D)
+            if self.non_rotary_dim > 0:
+                non_rotary_x = torch.flatten(non_rotary_x, 2)
+
+                # Concatenate rotary and non-rotary parts
+                return torch.cat([rotary_result, non_rotary_x], dim=-1)  # (B, N, D)
+            else:
+                return rotary_result
         else:
             # Handle non-flattened case
             if self.non_rotary_dim > 0:
-                # Reshape non-rotary part to match head structure
-                non_rotary_x_heads = non_rotary_x.view(
-                    *non_rotary_x.shape[:-1], self.num_heads, self.non_rotary_dim
-                )
-                non_rotary_x_heads = non_rotary_x_heads.transpose(
-                    1, 2
-                )  # (B, H, N, non_rotary_per_head)
-
-                # Combine rotary and non-rotary parts
-                rotary_x_heads = rotary_x_real.transpose(1, 2)  # (B, H, N, rotary_dim)
-                return torch.cat(
-                    [rotary_x_heads, non_rotary_x_heads], dim=-1
-                )  # (B, H, N, D_heads)
+                # (B, N, H, dims_per_head)
+                return torch.cat([rotary_x, non_rotary_x], dim=-2)
             else:
-                return rotary_x_real.transpose(1, 2)  # (B, H, N, rotary_dim)
+                return rotary_x
 
 
 class RoSEMultiHeadCrossAttention(nn.Module):
@@ -304,11 +350,11 @@ class RoSEMultiHeadCrossAttention(nn.Module):
             k_grid_shape = q_grid_shape
 
         # Rotate embeddings
-        q = self.rose(q, q_spacing, q_grid_shape, flatten=False)  # (B, H, N_q, D_heads)
-        k = self.rose(k, k_spacing, k_grid_shape, flatten=False)  # (B, H, N_k, D_heads)
+        q = self.rose(q, q_spacing, q_grid_shape)  # (B, N_q, H, dims_per_head)
+        k = self.rose(k, k_spacing, k_grid_shape)  # (B, N_k, H, dims_per_head)
 
         # Compute attention scores
-        attn = torch.einsum("bhnp,bhmp->bhnm", q, k)  # (B, H, N_q, N_k)
+        attn = torch.einsum("bnhp,bmhp->bhnm", q, k)  # (B, H, N_q, N_k)
 
         return attn
 
@@ -458,34 +504,33 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
         x = self.norm1(x)
 
         # Compute query, key, and value tensors
-        qkv = self.qkv(x)
-        q, k, v = qkv.chunk(3, dim=-1)
+        q, k, v = self.qkv(x).chunk(3, dim=-1)
 
         # Get dimensions for reshaping
         B, N, D = q.shape
 
-        # Apply RoSE per scale to q and k (v doesn't need rotation)
-        q_rotated = q.clone()  # Clone to avoid in-place issues
-        k_rotated = k.clone()
+        # Reshape for multi-head attention: (B, N, D) -> (B, N, H, D_head)
+        # Also need to make stand-in
+        _q = q.reshape(B, N, self.num_heads, self.head_dim).contiguous()
+        _k = k.reshape(B, N, self.num_heads, self.head_dim).contiguous()
+        v = v.reshape(B, N, self.num_heads, self.head_dim).contiguous()
 
         start = 0
         for spacing, grid_shape in zip(input_spacing, input_grid_shape):
             length = math.prod(grid_shape)
             # Apply RoSE to queries and keys for this scale
-            q_slice_rotated = self.rose(
+            _q[:, start : start + length] = self.rose(
                 q[:, start : start + length], spacing, grid_shape
             )
-            k_slice_rotated = self.rose(
+            _k[:, start : start + length] = self.rose(
                 k[:, start : start + length], spacing, grid_shape
             )
-            q_rotated[:, start : start + length] = q_slice_rotated
-            k_rotated[:, start : start + length] = k_slice_rotated
             start += length
 
-        # Reshape for multi-head attention: (B, N, D) -> (B, H, N, D_head)
-        q = q_rotated.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k_rotated.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        # [B, N, H, D_head] -> [B, H, N, D_head]
+        q = _q.transpose(1, 2)
+        k = _k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         # Perform attention
         attn_out = torch.nn.functional.scaled_dot_product_attention(
@@ -497,7 +542,7 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
         )
 
         # Reshape back: (B, H, N, D_head) -> (B, N, D)
-        attn_out = attn_out.transpose(1, 2).contiguous().view(B, N, D)
+        attn_out = attn_out.transpose(1, 2).reshape(B, N, D)
 
         # Projection and dropout
         attn_out = self.proj(attn_out)
@@ -507,8 +552,7 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
         x = identity + self.drop_path(attn_out)
 
         # MLP with pre-normalization and residual connection
-        mlp_out = self.mlp(self.norm2(x))
-        x = x + self.drop_path(mlp_out)
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
 
         # Split x back into the original multi-resolution sequence format
         if len(input_grid_shape) > 1:

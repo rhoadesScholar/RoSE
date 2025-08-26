@@ -7,6 +7,8 @@ import torch
 
 from RoSE import MultiRes_RoSE_TransformerBlock, RoSEMultiHeadCrossAttention
 
+torch.autograd.set_detect_anomaly(True)
+
 
 class TestRoSEMultiHeadAttention:
     """Test cases for RoSEMultiHeadAttention."""
@@ -244,15 +246,29 @@ class TestMultiResRoSETransformerBlock:
         seq_len = math.prod(grid_shape)
         spacing = (1.0, 1.0)
 
-        block = MultiRes_RoSE_TransformerBlock(
-            dim=dim,
-            num_heads=num_heads,
-            spatial_dims=spatial_dims,
-            learnable=True,  # Ensure learnable parameters
-        )
+        def block():
+            return MultiRes_RoSE_TransformerBlock(
+                dim=dim,
+                num_heads=num_heads,
+                spatial_dims=spatial_dims,
+                learnable=True,  # Ensure learnable parameters
+            )
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block1 = block()
+                self.block2 = block()
+
+            def forward(self, x, spacing, grid_shape):
+                x = self.block1(x, spacing, grid_shape)
+                x = self.block2(x, spacing, grid_shape)
+                return x
+
+        model = Model()
 
         x = torch.randn(batch_size, seq_len, dim, requires_grad=True)
-        output = block(x, spacing, grid_shape)
+        output = model(x, spacing, grid_shape)
 
         # Simple loss for gradient computation
         loss = output.sum()
@@ -261,13 +277,12 @@ class TestMultiResRoSETransformerBlock:
         # Check that input gradients exist
         assert x.grad is not None
 
-        # Check that some model parameters have gradients
-        param_with_grad = False
-        for param in block.parameters():
-            if param.grad is not None:
-                param_with_grad = True
-                break
-        assert param_with_grad
+        # Make sure model has parameters:
+        assert len(list(model.parameters())) > 0
+
+        # Check that all model parameters have non-zero gradients
+        for param in model.parameters():
+            assert param.grad is not None and param.grad.abs().sum() != 0
 
     def test_different_mlp_ratios(self):
         """Test with different MLP expansion ratios."""
