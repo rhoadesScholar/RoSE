@@ -16,7 +16,7 @@ __author__ = "Jeff Rhoades"
 __email__ = "rhoadesj@hhmi.org"
 
 from .rose import (
-    MultiRes_RoSE_TransformerBlock,
+    MultiRes_RoSE_Block,
     RoSEMultiHeadCrossAttention,
     RotarySpatialEmbedding,
 )
@@ -27,5 +27,5 @@ __all__ = [
     "__email__",
     "RoSEMultiHeadCrossAttention",
     "RotarySpatialEmbedding",
-    "MultiRes_RoSE_TransformerBlock",
+    "MultiRes_RoSE_Block",
 ]

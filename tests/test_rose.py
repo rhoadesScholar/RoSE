@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from RoSE import MultiRes_RoSE_TransformerBlock, RoSEMultiHeadCrossAttention
+from RoSE import MultiRes_RoSE_Block, RoSEMultiHeadCrossAttention
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -27,9 +27,12 @@ class TestRoSEMultiHeadAttention:
         dim = 64 * 2 * spatial_dims  # Ensure dim is divisible by num_heads
         num_heads = 8
         layer = RoSEMultiHeadCrossAttention(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=learnable
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=learnable,
         )
-        assert layer.dim == dim
+        assert layer.feature_dims == dim
         assert layer.num_heads == num_heads
         assert layer.spatial_dims == spatial_dims
         assert layer.learnable == learnable
@@ -48,7 +51,10 @@ class TestRoSEMultiHeadAttention:
         dim = 64 * 2 * spatial_dims  # Ensure dim is divisible by num_heads
         num_heads = 8
         layer = RoSEMultiHeadCrossAttention(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=learnable
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=learnable,
         )
 
         # create grid_shape and voxel_size based on spatial_dims
@@ -68,7 +74,7 @@ class TestRoSEMultiHeadAttention:
     def test_dim_not_divisible_by_heads(self):
         """Test that initialization fails when dim is not divisible by num_heads."""
         with pytest.raises(AssertionError):
-            RoSEMultiHeadCrossAttention(dim=129, num_heads=8)
+            RoSEMultiHeadCrossAttention(feature_dims=129, num_heads=8)
 
 
 class TestMultiResRoSETransformerBlock:
@@ -88,8 +94,8 @@ class TestMultiResRoSETransformerBlock:
         dim = 64
         num_heads = 8
 
-        block = MultiRes_RoSE_TransformerBlock(
-            dim=dim,
+        block = MultiRes_RoSE_Block(
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=rotary_ratio,
@@ -99,7 +105,7 @@ class TestMultiResRoSETransformerBlock:
             drop_path=0.1,
         )
 
-        assert block.dim == dim
+        assert block.feature_dims == dim
         assert block.num_heads == num_heads
         assert block.spatial_dims == spatial_dims
         assert block.head_dim == dim // num_heads
@@ -114,8 +120,8 @@ class TestMultiResRoSETransformerBlock:
         seq_len = math.prod(grid_shape)
         spacing = (1.0, 1.0)
 
-        block = MultiRes_RoSE_TransformerBlock(
-            dim=dim,
+        block = MultiRes_RoSE_Block(
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=1.0,
@@ -144,8 +150,8 @@ class TestMultiResRoSETransformerBlock:
         seq_len_1 = math.prod(grid_shape_1)
         seq_len_2 = math.prod(grid_shape_2)
 
-        block = MultiRes_RoSE_TransformerBlock(
-            dim=dim,
+        block = MultiRes_RoSE_Block(
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=0.5,
@@ -176,8 +182,8 @@ class TestMultiResRoSETransformerBlock:
         seq_len = math.prod(grid_shape)
         spacing = (1.0, 1.0)
 
-        block = MultiRes_RoSE_TransformerBlock(
-            dim=dim,
+        block = MultiRes_RoSE_Block(
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=0.0,  # No rotation
@@ -190,7 +196,7 @@ class TestMultiResRoSETransformerBlock:
 
         # Also test the attention layer directly with zero rotary ratio
         attn_layer = RoSEMultiHeadCrossAttention(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=0.0,
@@ -213,8 +219,8 @@ class TestMultiResRoSETransformerBlock:
         seq_len = math.prod(grid_shape)
         spacing = (1.0, 1.0)
 
-        block = MultiRes_RoSE_TransformerBlock(
-            dim=dim,
+        block = MultiRes_RoSE_Block(
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             attn_dropout=0.2,
@@ -247,8 +253,8 @@ class TestMultiResRoSETransformerBlock:
         spacing = (1.0, 1.0)
 
         def block():
-            return MultiRes_RoSE_TransformerBlock(
-                dim=dim,
+            return MultiRes_RoSE_Block(
+                feature_dims=dim,
                 num_heads=num_heads,
                 spatial_dims=spatial_dims,
                 learnable=True,  # Ensure learnable parameters
@@ -287,8 +293,8 @@ class TestMultiResRoSETransformerBlock:
     def test_different_mlp_ratios(self):
         """Test with different MLP expansion ratios."""
         for mlp_ratio in [1.0, 2.0, 4.0]:
-            block = MultiRes_RoSE_TransformerBlock(
-                dim=64,
+            block = MultiRes_RoSE_Block(
+                feature_dims=64,
                 num_heads=8,
                 spatial_dims=2,
                 mlp_ratio=mlp_ratio,
@@ -301,7 +307,7 @@ class TestMultiResRoSETransformerBlock:
         """Test that invalid dimension configurations raise errors."""
         # dim not divisible by num_heads
         with pytest.raises(AssertionError):
-            MultiRes_RoSE_TransformerBlock(dim=65, num_heads=8)
+            MultiRes_RoSE_Block(feature_dims=65, num_heads=8)
 
     @pytest.mark.parametrize(
         "device", ["cpu", "cuda"] if torch.cuda.is_available() else ["cpu"]
@@ -319,8 +325,8 @@ class TestMultiResRoSETransformerBlock:
         seq_len = math.prod(grid_shape)
         spacing = (1.0, 1.0)
 
-        block = MultiRes_RoSE_TransformerBlock(
-            dim=dim,
+        block = MultiRes_RoSE_Block(
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
         ).to(device)

@@ -72,7 +72,7 @@ class RotarySpatialEmbedding(nn.Module):
         ⎤
 
     Args:
-        dim: Total embedding dimension (must be even and divisible by num_heads)
+        feature_dims: Total embedding dimension (must be even and divisible by num_heads)
         num_heads: Number of attention heads
         spatial_dims: Number of spatial dimensions (2 for 2D, 3 for 3D, etc.)
         base_theta: Base frequency for rotary embeddings
@@ -86,7 +86,7 @@ class RotarySpatialEmbedding(nn.Module):
 
     def __init__(
         self,
-        dim: int,
+        feature_dims: int,
         num_heads: int,
         spatial_dims: int = 2,
         base_theta: float = 1e4,
@@ -96,28 +96,28 @@ class RotarySpatialEmbedding(nn.Module):
         rotary_ratio: float = 1.0,
     ):
         super().__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        assert feature_dims % num_heads == 0, "dim must be divisible by num_heads"
         assert (
-            dim // num_heads % 2 == 0
+            feature_dims // num_heads % 2 == 0
         ), "dims_per_head must be even for complex representation"
         assert 0.0 <= rotary_ratio <= 1.0, "rotary_ratio must be between 0.0 and 1.0"
 
-        self.dim = dim
+        self.feature_dims = feature_dims
         self.num_heads = num_heads
-        self.dims_per_head = dim // num_heads
+        self.dims_per_head = feature_dims // num_heads
         self.spatial_dims = spatial_dims
         self.rotary_ratio = rotary_ratio
         self.learnable = learnable
 
         # Calculate dimensions for rotary embedding
-        self.rotary_dim = int(self.dim * rotary_ratio)
+        self.rotary_dim = int(self.feature_dims * rotary_ratio)
 
         # Ensure rotary_dim is even and divisible by num_heads
         self.rotary_dim = (self.rotary_dim // self.dims_per_head) * self.dims_per_head
         self.rotary_dim = (self.rotary_dim // 2) * 2
 
         # Ensure rotary_dim is divisible by num_heads
-        self.non_rotary_dim = self.dim - self.rotary_dim
+        self.non_rotary_dim = self.feature_dims - self.rotary_dim
         assert (
             self.non_rotary_dim % self.dims_per_head == 0
         ), "non_rotary_dim must be divisible by dims_per_head. suggest changing rotary_ratio"
@@ -136,7 +136,7 @@ class RotarySpatialEmbedding(nn.Module):
             elif frequency_scaling == "sqrt":
                 self.rose_theta = base_theta ** (1 / math.sqrt(spatial_dims))
             elif frequency_scaling == "adaptive":
-                self.rose_theta = base_theta ** (2.0 / (spatial_dims * dim))
+                self.rose_theta = base_theta ** (2.0 / (spatial_dims * feature_dims))
 
             freqs = _make_log_spaced_frequencies(
                 self.num_rotary_planes * self.num_rotary_heads,
@@ -171,7 +171,11 @@ class RotarySpatialEmbedding(nn.Module):
         # If input is not already reshaped into heads, do it now
         if x.dim() == 3:
             B, N, D = x.shape
-            assert D == self.dim or D == self.rotary_dim or D == self.non_rotary_dim
+            assert (
+                D == self.feature_dims
+                or D == self.rotary_dim
+                or D == self.non_rotary_dim
+            )
             x = x.reshape(B, N, -1, self.dims_per_head)
         elif x.dim() == 4:
             B, N, H, D_head = x.shape
@@ -223,7 +227,7 @@ class RotarySpatialEmbedding(nn.Module):
 
         # --> [B, N, rotary_heads, dims_per_head]
         rotary_x = self.ensure_input_shape(rotary_x)
-        if self.rotary_dim < self.dim:
+        if self.rotary_dim < self.feature_dims:
             non_rotary_x = self.ensure_input_shape(non_rotary_x)
             # non_rotary_x shape: (B, N, non_rotary_heads, dims_per_head)
 
@@ -295,29 +299,31 @@ class RoSEMultiHeadCrossAttention(nn.Module):
         ⎤
 
     Args:
-        dim: Total embedding dimension (must be even and divisible by num_heads)
+        feature_dims: Total embedding dimension (must be even and divisible by num_heads)
         num_heads: Number of attention heads
         spatial_dims: Number of spatial dimensions (2 for 2D, 3 for 3D, etc.)
         base_theta: Base frequency for rotary embeddings
         learnable: Whether frequencies should be learnable parameters
         init_jitter_std: Standard deviation for frequency initialization jitter
         rotary_ratio: Fraction of embedding dimension to apply rotation to (0.0 to 1.0)
+        frequency_scaling: Frequency scaling method ("sqrt", "linear", etc.)
     """
 
     def __init__(
         self,
-        dim: int,
+        feature_dims: int,
         num_heads: int,
         spatial_dims: int = 2,
         base_theta: float = 1e4,
         learnable: bool = True,
         init_jitter_std: float = 0.02,
         rotary_ratio: float = 1.0,
+        frequency_scaling: str = "sqrt",
     ):
         super().__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        assert dim % 2 == 0, "dim must be even for complex representation"
-        self.dim = dim
+        assert feature_dims % num_heads == 0, "dim must be divisible by num_heads"
+        assert feature_dims % 2 == 0, "dim must be even for complex representation"
+        self.feature_dims = feature_dims
         self.num_heads = num_heads
         self.spatial_dims = spatial_dims
         self.rope_theta = base_theta ** (1 / spatial_dims)
@@ -325,13 +331,14 @@ class RoSEMultiHeadCrossAttention(nn.Module):
         self.init_jitter_std = init_jitter_std
 
         pe_kwargs = {
-            "dim": dim,
+            "feature_dims": feature_dims,
             "num_heads": num_heads,
             "spatial_dims": spatial_dims,
             "base_theta": base_theta,
             "learnable": learnable,
             "init_jitter_std": init_jitter_std,
             "rotary_ratio": rotary_ratio,
+            "frequency_scaling": frequency_scaling,
         }
         self.rose = RotarySpatialEmbedding(**pe_kwargs)
 
@@ -359,7 +366,7 @@ class RoSEMultiHeadCrossAttention(nn.Module):
         return attn
 
 
-class MultiRes_RoSE_TransformerBlock(nn.Module):
+class MultiRes_RoSE_Block(nn.Module):
     """
     Multi-Resolution RoSE Transformer Block
 
@@ -376,13 +383,14 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
 
     def __init__(
         self,
-        dim: int,
+        feature_dims: int,
         num_heads: int,
         spatial_dims: int = 2,
         base_theta: float = 1e4,
         learnable: bool = True,
         init_jitter_std: float = 0.02,
         rotary_ratio: float = 1.0,
+        frequency_scaling: str = "sqrt",
         mlp_ratio: float = 4.0,
         mlp_dropout: float = 0.0,
         mlp_bias: bool = True,
@@ -402,40 +410,41 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
             )
         super().__init__()
 
-        self.dim = dim
+        self.feature_dims = feature_dims
         self.num_heads = num_heads
         self.spatial_dims = spatial_dims
-        self.head_dim = dim // num_heads
+        self.head_dim = feature_dims // num_heads
         self.scale = self.head_dim**-0.5
 
         assert (
-            dim % num_heads == 0
-        ), f"dim {dim} must be divisible by num_heads {num_heads}"
+            feature_dims % num_heads == 0
+        ), f"dim {feature_dims} must be divisible by num_heads {num_heads}"
 
         # RoSE positional embedding
         self.rose = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=feature_dims,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             base_theta=base_theta,
             learnable=learnable,
             init_jitter_std=init_jitter_std,
             rotary_ratio=rotary_ratio,
+            frequency_scaling=frequency_scaling,
         )
 
         # Attention components
-        self.norm1 = norm_layer(dim, eps=norm_eps)
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.norm1 = norm_layer(feature_dims, eps=norm_eps)
+        self.qkv = nn.Linear(feature_dims, feature_dims * 3, bias=qkv_bias)
         self.attn_dropout = attn_dropout
-        self.proj = nn.Linear(dim, dim)
+        self.proj = nn.Linear(feature_dims, feature_dims)
         self.proj_dropout = nn.Dropout(proj_dropout)
 
         # MLP components
-        self.norm2 = norm_layer(dim, eps=norm_eps)
+        self.norm2 = norm_layer(feature_dims, eps=norm_eps)
         self.mlp = Mlp(
-            in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
-            out_features=dim,
+            in_features=feature_dims,
+            hidden_features=int(feature_dims * mlp_ratio),
+            out_features=feature_dims,
             drop=mlp_dropout,
             bias=mlp_bias,
             act_layer=mlp_activation,  # type: ignore
@@ -445,8 +454,10 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def _prepare_inputs(
-        self, x, input_spacing, input_grid_shape
-    ) -> Tuple[torch.Tensor, Sequence[Tuple[float, ...]], Sequence[Tuple[int, ...]]]:
+        self, x, input_spacing, input_grid_shape, leading_tokens
+    ) -> Tuple[
+        torch.Tensor, Sequence[Tuple[float, ...]], Sequence[Tuple[int, ...]], int
+    ]:
         """Prepare inputs for multi-resolution processing."""
         if isinstance(x, torch.Tensor):
             x = [x]
@@ -454,7 +465,9 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
             x, Sequence
         ), "Input x must be a tensor or a sequence of tensors"
         x = list(x)  # Ensure x is a list of tensors
-        num_ims = len(x)
+        num_ims = len(x) - leading_tokens
+        if leading_tokens:
+            leading_tokens = x[0].shape[1]
 
         input_spacing = to_tuple(input_spacing, self.spatial_dims)
         if not isinstance(input_spacing[0], Sequence):
@@ -474,13 +487,14 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
         # Combine images across scales
         x = torch.cat(x, dim=1)
 
-        return x, input_spacing, input_grid_shape  # type: ignore
+        return x, input_spacing, input_grid_shape, leading_tokens  # type: ignore
 
     def forward(
         self,
         x: torch.Tensor | Sequence[torch.Tensor],
         input_spacing: Tuple[float, ...] | Sequence[Tuple[float, ...]],
         input_grid_shape: Tuple[int, ...] | Sequence[Tuple[int, ...]],
+        leading_tokens: bool = False,
     ) -> torch.Tensor | Sequence[torch.Tensor]:
         """Forward pass of Multi-Resolution RoSE Transformer Block.
 
@@ -488,13 +502,14 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
             x: Input tensor of shape [B, T, E] or sequence of tensors
             input_spacing: Spacing information for the input(s)
             input_grid_shape: Grid shape of the input(s)
+            leading_tokens: Whether the first tensor in the sequence `x` are non-rotating tokens to be included in attention. If `True`, `x` must be a sequence of >= 2 tensors.
 
         Returns:
-            Output tensor with same shape as input
+            Output tensor(s) with same shape as input
         """
         # Prepare inputs
-        x, input_spacing, input_grid_shape = self._prepare_inputs(
-            x, input_spacing, input_grid_shape  # type: ignore
+        x, input_spacing, input_grid_shape, leading_tokens = self._prepare_inputs(
+            x, input_spacing, input_grid_shape, leading_tokens  # type: ignore
         )
 
         # Store original input for residual connection
@@ -515,7 +530,7 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
         _k = k.reshape(B, N, self.num_heads, self.head_dim).contiguous()
         v = v.reshape(B, N, self.num_heads, self.head_dim).contiguous()
 
-        start = 0
+        start = int(leading_tokens)
         for spacing, grid_shape in zip(input_spacing, input_grid_shape):
             length = math.prod(grid_shape)
             # Apply RoSE to queries and keys for this scale
@@ -555,9 +570,11 @@ class MultiRes_RoSE_TransformerBlock(nn.Module):
         x = x + self.drop_path(self.mlp(self.norm2(x)))
 
         # Split x back into the original multi-resolution sequence format
-        if len(input_grid_shape) > 1:
-            start = 0
+        if len(input_grid_shape) > 1 or leading_tokens:
             outputs = []
+            if leading_tokens:
+                outputs = [x[:, :leading_tokens, :]]  # type: ignore
+            start = int(leading_tokens)
             for grid_shape in input_grid_shape:
                 length = math.prod(grid_shape)
                 outputs.append(x[:, start : start + length, :])  # type: ignore
@@ -572,7 +589,7 @@ if __name__ == "__main__":
     spatial_dims = 3
     dim = 16 * 2 * spatial_dims * num_heads  # Ensure dim is divisible by num_heads
     layer = RoSEMultiHeadCrossAttention(
-        dim=dim, num_heads=num_heads, spatial_dims=spatial_dims
+        feature_dims=dim, num_heads=num_heads, spatial_dims=spatial_dims
     )
 
     # create grid_shape and spacing based on spatial_dims

@@ -22,12 +22,12 @@ class TestPackageMetadata:
         # Test that the main classes exist and are importable
         assert hasattr(RoSE, "RotarySpatialEmbedding")
         assert hasattr(RoSE, "RoSEMultiHeadCrossAttention")
-        assert hasattr(RoSE, "MultiRes_RoSE_TransformerBlock")
+        assert hasattr(RoSE, "MultiRes_RoSE_Block")
 
         # Test that they are actually classes/callable
         assert callable(RoSE.RotarySpatialEmbedding)
         assert callable(RoSE.RoSEMultiHeadCrossAttention)
-        assert callable(RoSE.MultiRes_RoSE_TransformerBlock)
+        assert callable(RoSE.MultiRes_RoSE_Block)
 
     def test_package_docstring(self):
         """Test that the package has a proper docstring."""

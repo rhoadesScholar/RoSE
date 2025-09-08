@@ -28,13 +28,13 @@ class TestRotarySpatialEmbedding:
             pytest.skip("Invalid dim/num_heads combination")
 
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
         )
 
-        assert layer.dim == dim
+        assert layer.feature_dims == dim
         assert layer.num_heads == num_heads
         assert layer.spatial_dims == spatial_dims
         assert layer.freqs.shape == (num_heads, dim // (2 * num_heads), spatial_dims)
@@ -43,14 +43,14 @@ class TestRotarySpatialEmbedding:
         """Test that invalid parameters raise appropriate errors."""
         # Dim not divisible by num_heads
         with pytest.raises(AssertionError, match="dim must be divisible by num_heads"):
-            RotarySpatialEmbedding(dim=65, num_heads=8)
+            RotarySpatialEmbedding(feature_dims=65, num_heads=8)
 
         # Odd dimension
         with pytest.raises(
             AssertionError,
             match="dims_per_head must be even for complex representation",
         ):
-            RotarySpatialEmbedding(dim=63, num_heads=7)
+            RotarySpatialEmbedding(feature_dims=63, num_heads=7)
 
     @pytest.mark.parametrize(
         "frequency_scaling", ["none", "linear", "sqrt", "adaptive"]
@@ -63,7 +63,7 @@ class TestRotarySpatialEmbedding:
         num_heads = 8
 
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             frequency_scaling=frequency_scaling,
@@ -90,13 +90,19 @@ class TestRotarySpatialEmbedding:
 
         # Fixed frequencies
         fixed_layer = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
         )
         assert not fixed_layer.freqs.requires_grad
 
         # Learnable frequencies
         learnable_layer = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=True
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=True,
         )
         assert learnable_layer.freqs.requires_grad
 
@@ -106,7 +112,7 @@ class TestRotarySpatialEmbedding:
 
         # Without jitter
         layer_no_jitter = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=True,
@@ -115,7 +121,7 @@ class TestRotarySpatialEmbedding:
 
         # With jitter
         layer_with_jitter = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=True,
@@ -152,7 +158,10 @@ class TestRotarySpatialEmbedding:
         num_heads = 4
 
         layer = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
         )
 
         x = torch.randn(batch_size, seq_len, dim)
@@ -168,7 +177,10 @@ class TestRotarySpatialEmbedding:
         batch_size, seq_len = 2, 16
 
         layer = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
         )
 
         x = torch.randn(batch_size, seq_len, dim)
@@ -184,7 +196,10 @@ class TestRotarySpatialEmbedding:
         batch_size, seq_len = 2, 9
 
         layer = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
         )
 
         grid_shape = (3, 3)
@@ -212,7 +227,10 @@ class TestRotarySpatialEmbedding:
         batch_size, seq_len = 2, 9
 
         layer = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
         )
 
         grid_shape = (3, 3)
@@ -239,7 +257,10 @@ class TestRotarySpatialEmbedding:
         batch_size, seq_len = 2, 9
 
         layer = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
         )
 
         x = torch.randn(batch_size, seq_len, dim)
@@ -266,7 +287,7 @@ class TestRotarySpatialEmbedding:
         num_heads = 4
 
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
@@ -292,7 +313,10 @@ class TestRotarySpatialEmbedding:
         dim, num_heads, spatial_dims = 32, 4, 2
 
         layer = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
         )
 
         # Test with minimum valid inputs
@@ -311,7 +335,7 @@ class TestRotarySpatialEmbedding:
         batch_size, seq_len = 2, 25
 
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
@@ -342,7 +366,7 @@ class TestRotarySpatialEmbedding:
 
         # Create two identical layers
         layer1 = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
@@ -350,7 +374,7 @@ class TestRotarySpatialEmbedding:
         )
 
         layer2 = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
@@ -373,7 +397,7 @@ class TestRotarySpatialEmbedding:
         batch_size = 1
 
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
@@ -406,7 +430,7 @@ class TestRotarySpatialEmbedding:
         batch_size = 1
 
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
@@ -430,7 +454,10 @@ class TestRotarySpatialEmbedding:
         dim, num_heads, spatial_dims = 32, 4, 2
 
         layer = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
         )
 
         batch_size = 1
@@ -452,7 +479,7 @@ class TestRotarySpatialEmbedding:
 
         # Test learnable version
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=True,
@@ -500,7 +527,7 @@ class TestRoSENumericalProperties:
 
         # Create embedding layer
         rose_layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=learnable,
@@ -578,7 +605,7 @@ class TestRoSENumericalProperties:
 
         # Create layer
         rose_layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
@@ -719,7 +746,7 @@ class TestRoSENumericalProperties:
         num_heads = 8
 
         rose_layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
@@ -756,7 +783,7 @@ class TestRoSENumericalProperties:
         num_heads = 4
 
         rose_layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
@@ -811,7 +838,7 @@ class TestRoSENumericalProperties:
         num_heads = 4
 
         rose_layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=True,
@@ -865,7 +892,7 @@ def test_core_rope_property():
 
     # Create embedding layer with no jitter for reproducible results
     rose = RotarySpatialEmbedding(
-        dim=dim,
+        feature_dims=dim,
         num_heads=num_heads,
         spatial_dims=spatial_dims,
         learnable=False,
@@ -965,7 +992,7 @@ class TestPartialRotation:
         """Test various rotary_ratio values."""
         dim, num_heads, spatial_dims = 64, 8, 2
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=rotary_ratio,
@@ -999,10 +1026,13 @@ class TestPartialRotation:
 
         # Create layers with and without explicit rotary_ratio
         layer_default = RotarySpatialEmbedding(
-            dim=dim, num_heads=num_heads, spatial_dims=spatial_dims, learnable=False
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
         )
         layer_explicit = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=1.0,
@@ -1026,7 +1056,7 @@ class TestPartialRotation:
         """Test that rotary_ratio=0.0 returns input unchanged."""
         dim, num_heads, spatial_dims = 32, 4, 2
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=0.0,
@@ -1045,7 +1075,7 @@ class TestPartialRotation:
         """Test that non-rotated parts are preserved unchanged."""
         dim, num_heads, spatial_dims = 64, 8, 2
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=0.5,
@@ -1073,7 +1103,7 @@ class TestPartialRotation:
         dim, num_heads, spatial_dims = 64, 8, 2
         batch_size, seq_len = 2, 16
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=0.5,
@@ -1097,7 +1127,7 @@ class TestPartialRotation:
             AssertionError, match="rotary_ratio must be between 0.0 and 1.0"
         ):
             RotarySpatialEmbedding(
-                dim=dim,
+                feature_dims=dim,
                 num_heads=num_heads,
                 spatial_dims=spatial_dims,
                 rotary_ratio=-0.1,
@@ -1108,7 +1138,7 @@ class TestPartialRotation:
             AssertionError, match="rotary_ratio must be between 0.0 and 1.0"
         ):
             RotarySpatialEmbedding(
-                dim=dim,
+                feature_dims=dim,
                 num_heads=num_heads,
                 spatial_dims=spatial_dims,
                 rotary_ratio=1.1,
@@ -1121,7 +1151,7 @@ class TestPartialRotation:
 
         # This should result in rotary_dim being adjusted to maintain head alignment
         layer = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=2,
             rotary_ratio=0.3,
@@ -1147,7 +1177,7 @@ class TestPartialRotation:
         """Test RoSEMultiHeadAttention with partial rotation."""
         dim, num_heads, spatial_dims = 64, 8, 2
         layer = RoSEMultiHeadCrossAttention(
-            dim=dim,
+            feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             rotary_ratio=0.25,
