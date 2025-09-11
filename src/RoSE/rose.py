@@ -46,6 +46,10 @@ def _init_p_nd(
 
 
 class RotarySpatialEmbedding(nn.Module):
+    # TODO: Add learnable scaling of spatial scale to better
+    # handle rotations across large scale differences. e.g.
+    # a, b, c = torch.nn.Parameter(torch.randn(3))
+    # scale = a * scale + scale ** b + c * log(scale)
     """
     Rotates input embeddings in 2-D sub-planes, independently per attention group (head).
     Supports partial rotation where only a subset of the embedding dimension is rotated.
@@ -508,6 +512,7 @@ class MultiRes_RoSE_Block(nn.Module):
             Output tensor(s) with same shape as input
         """
         # Prepare inputs
+        was_list = isinstance(x, Sequence)
         x, input_spacing, input_grid_shape, leading_tokens = self._prepare_inputs(
             x, input_spacing, input_grid_shape, leading_tokens  # type: ignore
         )
@@ -570,7 +575,7 @@ class MultiRes_RoSE_Block(nn.Module):
         x = x + self.drop_path(self.mlp(self.norm2(x)))
 
         # Split x back into the original multi-resolution sequence format
-        if len(input_grid_shape) > 1 or leading_tokens:
+        if len(input_grid_shape) > 1 or leading_tokens or was_list:
             outputs = []
             if leading_tokens:
                 outputs = [x[:, :leading_tokens, :]]  # type: ignore
