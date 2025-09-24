@@ -83,8 +83,8 @@ class RotarySpatialEmbedding(nn.Module):
                      the rest are passed through unchanged.
         frequency_scaling: Scaling strategy for frequencies ("none", "linear", "sqrt", "adaptive")
         learnable_scale: Whether to enable learnable scaling of spatial scale to better handle
-                        rotations across large scale differences. When True, adds learnable 
-                        parameters a, b, c, d that transform spacing as: 
+                        rotations across large scale differences. When True, adds learnable
+                        parameters a, b, c, d that transform spacing as:
                         scale = a * scale ** b + c * log(scale / d)
         log_scale: Enable logarithmic scaling transformation. When True, applies log scaling
                   either as learnable parameters (if learnable_scale=True) or fixed parameters
@@ -106,12 +106,45 @@ class RotarySpatialEmbedding(nn.Module):
         log_scale: bool = False,
     ):
         super().__init__()
+        self._validate_parameters(feature_dims, num_heads, rotary_ratio)
+        self._initialize_attributes(
+            feature_dims,
+            num_heads,
+            spatial_dims,
+            rotary_ratio,
+            learnable,
+            learnable_scale,
+            log_scale,
+        )
+
+        if self.rotary_dim > 0:
+            self._initialize_frequencies(
+                base_theta, frequency_scaling, learnable, init_jitter_std
+            )
+
+        self._initialize_scale_parameters(learnable_scale, log_scale)
+
+    def _validate_parameters(
+        self, feature_dims: int, num_heads: int, rotary_ratio: float
+    ):
+        """Validate input parameters."""
         assert feature_dims % num_heads == 0, "dim must be divisible by num_heads"
         assert (
             feature_dims // num_heads % 2 == 0
         ), "dims_per_head must be even for complex representation"
         assert 0.0 <= rotary_ratio <= 1.0, "rotary_ratio must be between 0.0 and 1.0"
 
+    def _initialize_attributes(
+        self,
+        feature_dims: int,
+        num_heads: int,
+        spatial_dims: int,
+        rotary_ratio: float,
+        learnable: bool,
+        learnable_scale: bool,
+        log_scale: bool,
+    ):
+        """Initialize basic attributes and calculate dimensions."""
         self.feature_dims = feature_dims
         self.num_heads = num_heads
         self.dims_per_head = feature_dims // num_heads
@@ -135,69 +168,92 @@ class RotarySpatialEmbedding(nn.Module):
         ), "non_rotary_dim must be divisible by dims_per_head. suggest changing rotary_ratio"
 
         if self.rotary_dim > 0:
-            # Calculate total rotary heads
             self.num_rotary_heads = int(self.rotary_dim // self.dims_per_head)
-
-            # Only create frequencies for the rotary portion
             self.num_rotary_planes = self.dims_per_head // 2
 
-            if frequency_scaling == "none":
-                self.rose_theta = base_theta
-            elif frequency_scaling == "linear":
-                self.rose_theta = base_theta ** (1 / spatial_dims)
-            elif frequency_scaling == "sqrt":
-                self.rose_theta = base_theta ** (1 / math.sqrt(spatial_dims))
-            elif frequency_scaling == "adaptive":
-                self.rose_theta = base_theta ** (2.0 / (spatial_dims * feature_dims))
+    def _calculate_theta(self, base_theta: float, frequency_scaling: str) -> float:
+        """Calculate theta based on frequency scaling method."""
+        if frequency_scaling == "none":
+            return base_theta
+        elif frequency_scaling == "linear":
+            return base_theta ** (1 / self.spatial_dims)
+        elif frequency_scaling == "sqrt":
+            return base_theta ** (1 / math.sqrt(self.spatial_dims))
+        elif frequency_scaling == "adaptive":
+            return base_theta ** (2.0 / (self.spatial_dims * self.feature_dims))
+        else:
+            raise ValueError(f"Unknown frequency_scaling: {frequency_scaling}")
 
-            freqs = _make_log_spaced_frequencies(
-                self.num_rotary_planes * self.num_rotary_heads,
-                spatial_dims,
-                self.rose_theta,
-            )  # (num_planes, spatial_dims)
-            freqs = freqs.reshape(
-                self.num_rotary_heads, -1, spatial_dims
-            )  # (H, P, spatial_dims)
+    def _initialize_frequencies(
+        self,
+        base_theta: float,
+        frequency_scaling: str,
+        learnable: bool,
+        init_jitter_std: float,
+    ):
+        """Initialize frequency parameters for rotary embedding."""
+        self.rose_theta = self._calculate_theta(base_theta, frequency_scaling)
 
-            if learnable:
-                if init_jitter_std > 0:
-                    eps = torch.randn_like(freqs) * init_jitter_std
-                    freqs = torch.exp(torch.clamp(freqs.log() + eps, min=-10, max=10))
-                self.freqs = nn.Parameter(
-                    freqs, requires_grad=True
-                )  # learned per head/plane
-            else:
-                self.register_buffer("freqs", freqs, persistent=False)
-        
-        # Initialize learnable spatial scale parameters
-        if learnable_scale or log_scale:
-            # Initialize learnable scale parameters a, b, c, d
-            # scale = a * scale ** b + c * log(scale / d)
-            if log_scale:
-                # log_scale mode: b=c=d=1, a=0
-                scale_a_init = torch.zeros(spatial_dims)
-                scale_b_init = torch.ones(spatial_dims)  
-                scale_c_init = torch.ones(spatial_dims)
-                scale_d_init = torch.ones(spatial_dims)
-            else:
-                # Default mode: a=b=d=1, c=0
-                scale_a_init = torch.ones(spatial_dims)
-                scale_b_init = torch.ones(spatial_dims)  
-                scale_c_init = torch.zeros(spatial_dims)
-                scale_d_init = torch.ones(spatial_dims)
-            
-            if learnable_scale:
-                # Create learnable parameters
-                self.scale_a = nn.Parameter(scale_a_init)
-                self.scale_b = nn.Parameter(scale_b_init)  
-                self.scale_c = nn.Parameter(scale_c_init)
-                self.scale_d = nn.Parameter(scale_d_init)
-            else:
-                # Create fixed buffers (non-learnable)
-                self.register_buffer("scale_a", scale_a_init, persistent=False)
-                self.register_buffer("scale_b", scale_b_init, persistent=False)
-                self.register_buffer("scale_c", scale_c_init, persistent=False)
-                self.register_buffer("scale_d", scale_d_init, persistent=False)
+        freqs = _make_log_spaced_frequencies(
+            self.num_rotary_planes * self.num_rotary_heads,
+            self.spatial_dims,
+            self.rose_theta,
+        )  # (num_planes, spatial_dims)
+        freqs = freqs.reshape(
+            self.num_rotary_heads, -1, self.spatial_dims
+        )  # (H, P, spatial_dims)
+
+        if learnable:
+            if init_jitter_std > 0:
+                eps = torch.randn_like(freqs) * init_jitter_std
+                freqs = torch.exp(torch.clamp(freqs.log() + eps, min=-10, max=10))
+            self.freqs = nn.Parameter(freqs, requires_grad=True)
+        else:
+            self.register_buffer("freqs", freqs, persistent=False)
+
+    def _get_scale_init_values(self, log_scale: bool) -> tuple[torch.Tensor, ...]:
+        """Get initial values for scale parameters."""
+        if log_scale:
+            # log_scale mode: b=c=d=1, a=0
+            return (
+                torch.zeros(self.spatial_dims),  # scale_a
+                torch.ones(self.spatial_dims),  # scale_b
+                torch.ones(self.spatial_dims),  # scale_c
+                torch.ones(self.spatial_dims),  # scale_d
+            )
+        else:
+            # Default mode: a=b=d=1, c=0 (identity transformation)
+            return (
+                torch.ones(self.spatial_dims),  # scale_a
+                torch.ones(self.spatial_dims),  # scale_b
+                torch.zeros(self.spatial_dims),  # scale_c
+                torch.ones(self.spatial_dims),  # scale_d
+            )
+
+    def _initialize_scale_parameters(self, learnable_scale: bool, log_scale: bool):
+        """Initialize spatial scale parameters."""
+        if not (learnable_scale or log_scale):
+            return
+
+        (
+            scale_a_init,
+            scale_b_init,
+            scale_c_init,
+            scale_d_init,
+        ) = self._get_scale_init_values(log_scale)
+
+        if learnable_scale:
+            # Create learnable parameters
+            self.scale_a = nn.Parameter(scale_a_init)
+            self.scale_b = nn.Parameter(scale_b_init)
+            self.scale_c = nn.Parameter(scale_c_init)
+            self.scale_d = nn.Parameter(scale_d_init)
+        else:
+            # Create fixed buffers (non-learnable)
+            self.register_buffer("scale_a", scale_a_init, persistent=False)
+            self.register_buffer("scale_b", scale_b_init, persistent=False)
+            self.register_buffer("scale_c", scale_c_init, persistent=False)
+            self.register_buffer("scale_d", scale_d_init, persistent=False)
 
     def _get_complex_split(self, rotary_x: torch.Tensor) -> torch.Tensor:
         # rotary_x shape: (B, N, H, dims_per_head)
@@ -279,52 +335,60 @@ class RotarySpatialEmbedding(nn.Module):
         # Get position tensor with learnable scaling applied to spacing
         # (N, spatial_dims)
         pos = _init_p_nd(grid_shape, spacing=spacing, dtype=x.dtype, device=x.device)
-        
+
         # Apply scaling to the position tensor if enabled
         if self.learnable_scale or self.log_scale:
             # Convert spacing to tensor once with consistent device/dtype
             spacing_tensor = torch.tensor(spacing, device=x.device, dtype=x.dtype)
-            
+
             # Apply scaling: scale = a * scale ** b + c * log(scale / d)
             # Note: We don't clamp input spacing to preserve user-specified scales (e.g., nanometers)
-            
+
             # Move scale parameters to the same device as input for efficient computation
             scale_a = self.scale_a.to(device=x.device, dtype=x.dtype)
             scale_b = self.scale_b.to(device=x.device, dtype=x.dtype)
             scale_c = self.scale_c.to(device=x.device, dtype=x.dtype)
             scale_d = self.scale_d.to(device=x.device, dtype=x.dtype)
-            
+
             # Clamp scale_d to avoid division by zero in log term
             scale_d_clamped = torch.clamp(scale_d, min=1e-8)
-            
+
             # For log and power operations, we need to handle edge cases without clamping input
             # Use torch.where to handle zero/negative spacing values gracefully
-            safe_spacing = torch.where(spacing_tensor > 0, spacing_tensor, torch.ones_like(spacing_tensor))
+            safe_spacing = torch.where(
+                spacing_tensor > 0, spacing_tensor, torch.ones_like(spacing_tensor)
+            )
             safe_log_term = torch.where(
                 spacing_tensor > 0,
                 torch.log(safe_spacing / scale_d_clamped),
-                torch.zeros_like(spacing_tensor)  # Use 0 for log of non-positive values
+                torch.zeros_like(
+                    spacing_tensor
+                ),  # Use 0 for log of non-positive values
             )
             safe_power_term = torch.where(
                 spacing_tensor > 0,
                 torch.pow(safe_spacing, scale_b),
-                torch.zeros_like(spacing_tensor)  # Use 0 for power of non-positive values
+                torch.zeros_like(
+                    spacing_tensor
+                ),  # Use 0 for power of non-positive values
             )
-            
+
             scaled_spacing = scale_a * safe_power_term + scale_c * safe_log_term
-            
+
             # Compute scaling factor and validate for numerical stability
             scaling_factor = torch.where(
                 spacing_tensor != 0,
                 scaled_spacing / spacing_tensor,
-                torch.ones_like(spacing_tensor)  # Identity scaling for zero spacing
+                torch.ones_like(spacing_tensor),  # Identity scaling for zero spacing
             )
-            
+
             # Check for invalid values (inf, nan) in scaling factor and replace with identity
             scaling_factor = torch.where(
                 torch.isfinite(scaling_factor),
                 scaling_factor,
-                torch.ones_like(scaling_factor)  # Use identity scaling for invalid values
+                torch.ones_like(
+                    scaling_factor
+                ),  # Use identity scaling for invalid values
             )
             pos = pos * scaling_factor.unsqueeze(0)  # (N, spatial_dims)
 

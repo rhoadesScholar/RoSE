@@ -510,7 +510,7 @@ class TestRotarySpatialEmbedding:
         """Test learnable spatial scale functionality."""
         dim, num_heads, spatial_dims = 32, 4, 2
         batch_size, seq_len = 2, 9
-        
+
         # Create layer with learnable scaling enabled
         layer = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -519,47 +519,59 @@ class TestRotarySpatialEmbedding:
             learnable=False,
             learnable_scale=True,
         )
-        
+
         # Check that scale parameters exist and have correct shape
-        assert hasattr(layer, 'scale_a'), "scale_a parameter should exist"
-        assert hasattr(layer, 'scale_b'), "scale_b parameter should exist"  
-        assert hasattr(layer, 'scale_c'), "scale_c parameter should exist"
-        assert layer.scale_a.shape == (spatial_dims,), f"scale_a should have shape ({spatial_dims},)"
-        assert layer.scale_b.shape == (spatial_dims,), f"scale_b should have shape ({spatial_dims},)"
-        assert layer.scale_c.shape == (spatial_dims,), f"scale_c should have shape ({spatial_dims},)"
-        
+        assert hasattr(layer, "scale_a"), "scale_a parameter should exist"
+        assert hasattr(layer, "scale_b"), "scale_b parameter should exist"
+        assert hasattr(layer, "scale_c"), "scale_c parameter should exist"
+        assert layer.scale_a.shape == (
+            spatial_dims,
+        ), f"scale_a should have shape ({spatial_dims},)"
+        assert layer.scale_b.shape == (
+            spatial_dims,
+        ), f"scale_b should have shape ({spatial_dims},)"
+        assert layer.scale_c.shape == (
+            spatial_dims,
+        ), f"scale_c should have shape ({spatial_dims},)"
+
         # Check initial values
-        assert torch.allclose(layer.scale_a, torch.ones(spatial_dims)), "scale_a should be initialized to ones"
-        assert torch.allclose(layer.scale_b, torch.ones(spatial_dims)), "scale_b should be initialized to ones"
-        assert torch.allclose(layer.scale_c, torch.zeros(spatial_dims)), "scale_c should be initialized to zeros"
-        
+        assert torch.allclose(
+            layer.scale_a, torch.ones(spatial_dims)
+        ), "scale_a should be initialized to ones"
+        assert torch.allclose(
+            layer.scale_b, torch.ones(spatial_dims)
+        ), "scale_b should be initialized to ones"
+        assert torch.allclose(
+            layer.scale_c, torch.zeros(spatial_dims)
+        ), "scale_c should be initialized to zeros"
+
         # Test that parameters require gradients
         assert layer.scale_a.requires_grad, "scale_a should require gradients"
         assert layer.scale_b.requires_grad, "scale_b should require gradients"
         assert layer.scale_c.requires_grad, "scale_c should require gradients"
-        
+
         # Test forward pass with learnable scaling
         x = torch.randn(batch_size, seq_len, dim, requires_grad=True)
         grid_shape = (3, 3)
         spacing = (1.0, 1.0)
-        
+
         output = layer(x, spacing, grid_shape, flatten=True)
-        
+
         # Check output shape
         assert output.shape == (batch_size, seq_len, dim)
-        
+
         # Test gradient flow through scale parameters
         loss = output.sum()
         loss.backward()
-        
+
         assert layer.scale_a.grad is not None, "scale_a should have gradients"
         assert layer.scale_b.grad is not None, "scale_b should have gradients"
         assert layer.scale_c.grad is not None, "scale_c should have gradients"
-        
+
     def test_learnable_scale_disabled(self):
         """Test that learnable scaling can be disabled."""
         dim, num_heads, spatial_dims = 32, 4, 2
-        
+
         # Create layer without learnable scaling
         layer = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -568,22 +580,28 @@ class TestRotarySpatialEmbedding:
             learnable=False,
             learnable_scale=False,  # Explicitly disabled
         )
-        
+
         # Check that scale parameters don't exist
-        assert not hasattr(layer, 'scale_a'), "scale_a should not exist when learnable_scale=False"
-        assert not hasattr(layer, 'scale_b'), "scale_b should not exist when learnable_scale=False"
-        assert not hasattr(layer, 'scale_c'), "scale_c should not exist when learnable_scale=False"
-        
+        assert not hasattr(
+            layer, "scale_a"
+        ), "scale_a should not exist when learnable_scale=False"
+        assert not hasattr(
+            layer, "scale_b"
+        ), "scale_b should not exist when learnable_scale=False"
+        assert not hasattr(
+            layer, "scale_c"
+        ), "scale_c should not exist when learnable_scale=False"
+
         # Forward pass should still work
         x = torch.randn(2, 9, dim)
         output = layer(x, (1.0, 1.0), (3, 3), flatten=True)
         assert output.shape == (2, 9, dim)
-        
+
     def test_learnable_scale_transformation(self):
         """Test that learnable scaling actually transforms the spacing."""
         dim, num_heads, spatial_dims = 32, 4, 2
         batch_size, seq_len = 2, 9
-        
+
         # Create two identical layers, one with learnable scaling
         layer_normal = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -592,7 +610,7 @@ class TestRotarySpatialEmbedding:
             learnable=False,
             learnable_scale=False,
         )
-        
+
         layer_learnable = RotarySpatialEmbedding(
             feature_dims=dim,
             num_heads=num_heads,
@@ -600,39 +618,40 @@ class TestRotarySpatialEmbedding:
             learnable=False,
             learnable_scale=True,
         )
-        
-        # With default parameters (a=1, b=1, c=0), they should be different
-        # since the transformation becomes: spacing = 1 * spacing + spacing ** 1 + 0 * log(spacing) = 2 * spacing
+
+        # With default parameters (a=1, b=1, c=0, d=1), the transformation gives identity scaling
+        # so outputs should actually be the same initially
         x = torch.randn(batch_size, seq_len, dim)
         grid_shape = (3, 3)
         spacing = (1.0, 1.0)
-        
+
         output_normal = layer_normal(x, spacing, grid_shape, flatten=True)
         output_learnable = layer_learnable(x, spacing, grid_shape, flatten=True)
-        
-        # They should be different because the learnable version transforms spacing
-        assert not torch.allclose(output_normal, output_learnable, atol=1e-6), \
-            "Outputs should be different when learnable scaling is enabled"
-        
+
+        # With identity transformation, outputs should be the same initially
+        assert torch.allclose(
+            output_normal, output_learnable, atol=1e-6
+        ), "Outputs should be the same with identity transformation"
+
         # Now modify the scale parameters to test the transformation
         with torch.no_grad():
             layer_learnable.scale_a.fill_(2.0)  # a = 2
             layer_learnable.scale_b.fill_(0.0)  # b = 0 (effectively scale^0 = 1)
             layer_learnable.scale_c.fill_(0.0)  # c = 0
-            
+
         # This should give: scale = 2 * scale ** 0 + 0 * log(scale / 1) = 2 * 1 = 2 (constant)
         output_modified = layer_learnable(x, spacing, grid_shape, flatten=True)
-        
+
         # Should be different from both previous outputs
         assert not torch.allclose(output_normal, output_modified, atol=1e-6)
         assert not torch.allclose(output_learnable, output_modified, atol=1e-6)
-        
+
         # Test gradient flow through modified parameters
         x_grad = torch.randn(batch_size, seq_len, dim, requires_grad=True)
         output_grad = layer_learnable(x_grad, spacing, grid_shape, flatten=True)
         loss = output_grad.sum()
         loss.backward()
-        
+
         assert layer_learnable.scale_a.grad is not None
         assert layer_learnable.scale_b.grad is not None
         assert layer_learnable.scale_c.grad is not None
@@ -640,7 +659,7 @@ class TestRotarySpatialEmbedding:
     def test_new_scaling_equation_parameters(self):
         """Test the new scaling equation and parameter initialization."""
         dim, num_heads, spatial_dims = 32, 4, 2
-        
+
         # Test default mode parameters (a=b=d=1, c=0)
         layer_default = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -650,12 +669,12 @@ class TestRotarySpatialEmbedding:
             learnable_scale=True,
             log_scale=False,
         )
-        
+
         assert torch.allclose(layer_default.scale_a, torch.ones(spatial_dims))
         assert torch.allclose(layer_default.scale_b, torch.ones(spatial_dims))
         assert torch.allclose(layer_default.scale_c, torch.zeros(spatial_dims))
         assert torch.allclose(layer_default.scale_d, torch.ones(spatial_dims))
-        
+
         # Test log_scale mode parameters (a=0, b=c=d=1)
         layer_log = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -665,32 +684,32 @@ class TestRotarySpatialEmbedding:
             learnable_scale=True,
             log_scale=True,
         )
-        
+
         assert torch.allclose(layer_log.scale_a, torch.zeros(spatial_dims))
         assert torch.allclose(layer_log.scale_b, torch.ones(spatial_dims))
         assert torch.allclose(layer_log.scale_c, torch.ones(spatial_dims))
         assert torch.allclose(layer_log.scale_d, torch.ones(spatial_dims))
-        
+
         # Test that both modes produce valid outputs
         x = torch.randn(2, 9, dim)
         spacing = (1.0, 1.0)
         grid_shape = (3, 3)
-        
+
         output_default = layer_default(x, spacing, grid_shape, flatten=True)
         output_log = layer_log(x, spacing, grid_shape, flatten=True)
-        
+
         assert output_default.shape == (2, 9, dim)
         assert output_log.shape == (2, 9, dim)
-        
+
         # Outputs should be different between modes
         assert not torch.allclose(output_default, output_log, atol=1e-6)
-        
+
         # Test gradient flow for new parameter d
         x_grad = torch.randn(2, 9, dim, requires_grad=True)
         output_grad = layer_default(x_grad, spacing, grid_shape, flatten=True)
         loss = output_grad.sum()
         loss.backward()
-        
+
         assert layer_default.scale_a.grad is not None
         assert layer_default.scale_b.grad is not None
         assert layer_default.scale_c.grad is not None
@@ -699,7 +718,7 @@ class TestRotarySpatialEmbedding:
     def test_scaling_equation_mathematical_properties(self):
         """Test mathematical properties of the new scaling equation."""
         dim, num_heads, spatial_dims = 32, 4, 2
-        
+
         # Test that default parameters give identity-like transform
         layer_default = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -709,15 +728,15 @@ class TestRotarySpatialEmbedding:
             learnable_scale=True,
             log_scale=False,
         )
-        
+
         # With default parameters (a=b=d=1, c=0), the equation becomes:
         # scale = 1 * scale^1 + 0 * log(scale/1) = scale (identity)
         x = torch.randn(2, 9, dim)
         spacing = (2.0, 3.0)  # Use non-unit spacing
         grid_shape = (3, 3)
-        
+
         output_default = layer_default(x, spacing, grid_shape, flatten=True)
-        
+
         # Test log_scale mode gives different behavior
         layer_log = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -727,25 +746,25 @@ class TestRotarySpatialEmbedding:
             learnable_scale=True,
             log_scale=True,
         )
-        
+
         # With log parameters (a=0, b=c=d=1), the equation becomes:
         # scale = 0 * scale^1 + 1 * log(scale/1) = log(scale)
         output_log = layer_log(x, spacing, grid_shape, flatten=True)
-        
+
         # Should produce different results
         assert not torch.allclose(output_default, output_log, atol=1e-6)
-        
+
         # Test mathematical consistency: both should be deterministic
         output_default2 = layer_default(x, spacing, grid_shape, flatten=True)
         output_log2 = layer_log(x, spacing, grid_shape, flatten=True)
-        
+
         assert torch.allclose(output_default, output_default2)
         assert torch.allclose(output_log, output_log2)
 
     def test_log_scale_without_learnable(self):
         """Test that log_scale=True works correctly even when learnable_scale=False."""
         dim, num_heads, spatial_dims = 32, 4, 2
-        
+
         # Test fixed log scaling (non-learnable)
         layer_fixed_log = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -753,9 +772,9 @@ class TestRotarySpatialEmbedding:
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=False,  # Not learnable
-            log_scale=True,         # But still apply log scaling
+            log_scale=True,  # But still apply log scaling
         )
-        
+
         # Test normal fixed scaling for comparison
         layer_fixed_normal = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -765,43 +784,53 @@ class TestRotarySpatialEmbedding:
             learnable_scale=False,
             log_scale=False,
         )
-        
+
         # Check that scale parameters exist and have correct values for fixed log scaling
-        assert hasattr(layer_fixed_log, 'scale_a'), "Fixed log scaling should have scale_a"
-        assert hasattr(layer_fixed_log, 'scale_b'), "Fixed log scaling should have scale_b"
-        assert hasattr(layer_fixed_log, 'scale_c'), "Fixed log scaling should have scale_c" 
-        assert hasattr(layer_fixed_log, 'scale_d'), "Fixed log scaling should have scale_d"
-        
+        assert hasattr(
+            layer_fixed_log, "scale_a"
+        ), "Fixed log scaling should have scale_a"
+        assert hasattr(
+            layer_fixed_log, "scale_b"
+        ), "Fixed log scaling should have scale_b"
+        assert hasattr(
+            layer_fixed_log, "scale_c"
+        ), "Fixed log scaling should have scale_c"
+        assert hasattr(
+            layer_fixed_log, "scale_d"
+        ), "Fixed log scaling should have scale_d"
+
         # Check parameter values (a=0, b=c=d=1 for log scaling)
         assert torch.allclose(layer_fixed_log.scale_a, torch.zeros(spatial_dims))
         assert torch.allclose(layer_fixed_log.scale_b, torch.ones(spatial_dims))
         assert torch.allclose(layer_fixed_log.scale_c, torch.ones(spatial_dims))
         assert torch.allclose(layer_fixed_log.scale_d, torch.ones(spatial_dims))
-        
+
         # Check that parameters are not learnable (should be buffers, not Parameters)
         assert not isinstance(layer_fixed_log.scale_a, torch.nn.Parameter)
         assert not isinstance(layer_fixed_log.scale_b, torch.nn.Parameter)
         assert not isinstance(layer_fixed_log.scale_c, torch.nn.Parameter)
         assert not isinstance(layer_fixed_log.scale_d, torch.nn.Parameter)
-        
+
         # Normal fixed scaling should not have these parameters
-        assert not hasattr(layer_fixed_normal, 'scale_a'), "Normal fixed scaling should not have scale_a"
-        
+        assert not hasattr(
+            layer_fixed_normal, "scale_a"
+        ), "Normal fixed scaling should not have scale_a"
+
         # Test forward pass
         x = torch.randn(2, 9, dim)
         spacing = (2.0, 3.0)  # Use non-unit spacing to see the effect
         grid_shape = (3, 3)
-        
+
         output_fixed_log = layer_fixed_log(x, spacing, grid_shape, flatten=True)
         output_fixed_normal = layer_fixed_normal(x, spacing, grid_shape, flatten=True)
-        
+
         # Outputs should be different due to log scaling
         assert not torch.allclose(output_fixed_log, output_fixed_normal, atol=1e-6)
-        
+
         # Test that fixed log scaling is deterministic
         output_fixed_log2 = layer_fixed_log(x, spacing, grid_shape, flatten=True)
         assert torch.allclose(output_fixed_log, output_fixed_log2)
-        
+
         # Test comparison with learnable log scaling (should produce same results initially)
         layer_learnable_log = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -811,16 +840,16 @@ class TestRotarySpatialEmbedding:
             learnable_scale=True,
             log_scale=True,
         )
-        
+
         output_learnable_log = layer_learnable_log(x, spacing, grid_shape, flatten=True)
-        
+
         # Should produce identical results since both start with same parameter values
         assert torch.allclose(output_fixed_log, output_learnable_log, atol=1e-6)
 
     def test_extreme_spacing_values(self):
         """Test that extreme spacing values are handled correctly without artificial clamping."""
         dim, num_heads, spatial_dims = 32, 4, 2
-        
+
         # Create layers with different scaling modes
         layer_normal = RotarySpatialEmbedding(
             feature_dims=dim,
@@ -830,7 +859,7 @@ class TestRotarySpatialEmbedding:
             learnable_scale=False,
             log_scale=False,
         )
-        
+
         layer_learnable = RotarySpatialEmbedding(
             feature_dims=dim,
             num_heads=num_heads,
@@ -839,55 +868,57 @@ class TestRotarySpatialEmbedding:
             learnable_scale=True,
             log_scale=False,
         )
-        
+
         x = torch.randn(2, 9, dim)
         grid_shape = (3, 3)
-        
+
         # Test extreme spacing values that should not be artificially clamped
         extreme_spacings = [
-            (1e-9, 1e-9),     # Nanometers
-            (1e-6, 1e-6),     # Micrometers  
-            (1e-3, 1e-3),     # Millimeters
-            (1.0, 1.0),       # Meters
-            (1e3, 1e3),       # Kilometers
-            (1e-9, 1e3),      # Mixed scales (nanometers to kilometers)
-            (0.0, 1.0),       # Edge case: zero spacing
+            (1e-9, 1e-9),  # Nanometers
+            (1e-6, 1e-6),  # Micrometers
+            (1e-3, 1e-3),  # Millimeters
+            (1.0, 1.0),  # Meters
+            (1e3, 1e3),  # Kilometers
+            (1e-9, 1e3),  # Mixed scales (nanometers to kilometers)
+            (0.0, 1.0),  # Edge case: zero spacing
         ]
-        
+
         for spacing in extreme_spacings:
             # All spacings should work without errors
             try:
                 output_normal = layer_normal(x, spacing, grid_shape, flatten=True)
                 output_learnable = layer_learnable(x, spacing, grid_shape, flatten=True)
-                
+
                 # Check output shapes are correct
                 assert output_normal.shape == (2, 9, dim)
                 assert output_learnable.shape == (2, 9, dim)
-                
+
                 # Check outputs are finite (no inf/nan)
                 assert torch.all(torch.isfinite(output_normal))
                 assert torch.all(torch.isfinite(output_learnable))
-                
+
             except Exception as e:
                 pytest.fail(f"Failed with spacing {spacing}: {e}")
-        
+
         # Test that different extreme spacings produce different results
         nano_output = layer_learnable(x, (1e-9, 1e-9), grid_shape, flatten=True)
-        kilo_output = layer_learnable(x, (1e3, 1e3), grid_shape, flatten=True) 
-        
+        kilo_output = layer_learnable(x, (1e3, 1e3), grid_shape, flatten=True)
+
         # These should be different due to different spatial relationships
         assert not torch.allclose(nano_output, kilo_output, atol=1e-6)
-        
+
         # Test magnitude preservation is maintained even for extreme scales
         original_norm = torch.norm(x, dim=-1)
-        
+
         for spacing in [(1e-9, 1e-9), (1e3, 1e3)]:
             output = layer_normal(x, spacing, grid_shape, flatten=True)
             rotated_norm = torch.norm(output, dim=-1)
             max_norm_diff = torch.abs(original_norm - rotated_norm).max()
-            
+
             # Allow slightly larger tolerance for extreme scales
-            assert max_norm_diff < 1e-4, f"Magnitude not preserved for spacing {spacing}"
+            assert (
+                max_norm_diff < 1e-4
+            ), f"Magnitude not preserved for spacing {spacing}"
 
 
 class TestRoSENumericalProperties:
