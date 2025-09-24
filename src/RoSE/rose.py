@@ -430,6 +430,7 @@ class MultiRes_RoSE_Block(nn.Module):
         init_jitter_std: float = 0.02,
         rotary_ratio: float = 1.0,
         frequency_scaling: str = "sqrt",
+        learnable_scale: bool = False,
         mlp_ratio: float = 4.0,
         mlp_dropout: float = 0.0,
         mlp_bias: bool = True,
@@ -469,6 +470,7 @@ class MultiRes_RoSE_Block(nn.Module):
             init_jitter_std=init_jitter_std,
             rotary_ratio=rotary_ratio,
             frequency_scaling=frequency_scaling,
+            learnable_scale=learnable_scale,
         )
 
         # Attention components
