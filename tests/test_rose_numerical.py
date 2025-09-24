@@ -506,6 +506,127 @@ class TestRotarySpatialEmbedding:
         assert torch.any(x.grad != 0)
         assert torch.any(layer.freqs.grad != 0)
 
+    def test_learnable_scale_parameters(self):
+        """Test learnable spatial scale functionality."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        batch_size, seq_len = 2, 9
+        
+        # Create layer with learnable scaling enabled
+        layer = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+        )
+        
+        # Check that scale parameters exist and have correct shape
+        assert hasattr(layer, 'scale_a'), "scale_a parameter should exist"
+        assert hasattr(layer, 'scale_b'), "scale_b parameter should exist"  
+        assert hasattr(layer, 'scale_c'), "scale_c parameter should exist"
+        assert layer.scale_a.shape == (spatial_dims,), f"scale_a should have shape ({spatial_dims},)"
+        assert layer.scale_b.shape == (spatial_dims,), f"scale_b should have shape ({spatial_dims},)"
+        assert layer.scale_c.shape == (spatial_dims,), f"scale_c should have shape ({spatial_dims},)"
+        
+        # Check initial values
+        assert torch.allclose(layer.scale_a, torch.ones(spatial_dims)), "scale_a should be initialized to ones"
+        assert torch.allclose(layer.scale_b, torch.ones(spatial_dims)), "scale_b should be initialized to ones"
+        assert torch.allclose(layer.scale_c, torch.zeros(spatial_dims)), "scale_c should be initialized to zeros"
+        
+        # Test that parameters require gradients
+        assert layer.scale_a.requires_grad, "scale_a should require gradients"
+        assert layer.scale_b.requires_grad, "scale_b should require gradients"
+        assert layer.scale_c.requires_grad, "scale_c should require gradients"
+        
+        # Test forward pass with learnable scaling
+        x = torch.randn(batch_size, seq_len, dim, requires_grad=True)
+        grid_shape = (3, 3)
+        spacing = (1.0, 1.0)
+        
+        output = layer(x, spacing, grid_shape, flatten=True)
+        
+        # Check output shape
+        assert output.shape == (batch_size, seq_len, dim)
+        
+        # Test gradient flow through scale parameters
+        loss = output.sum()
+        loss.backward()
+        
+        assert layer.scale_a.grad is not None, "scale_a should have gradients"
+        assert layer.scale_b.grad is not None, "scale_b should have gradients"
+        assert layer.scale_c.grad is not None, "scale_c should have gradients"
+        
+    def test_learnable_scale_disabled(self):
+        """Test that learnable scaling can be disabled."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        
+        # Create layer without learnable scaling
+        layer = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=False,  # Explicitly disabled
+        )
+        
+        # Check that scale parameters don't exist
+        assert not hasattr(layer, 'scale_a'), "scale_a should not exist when learnable_scale=False"
+        assert not hasattr(layer, 'scale_b'), "scale_b should not exist when learnable_scale=False"
+        assert not hasattr(layer, 'scale_c'), "scale_c should not exist when learnable_scale=False"
+        
+        # Forward pass should still work
+        x = torch.randn(2, 9, dim)
+        output = layer(x, (1.0, 1.0), (3, 3), flatten=True)
+        assert output.shape == (2, 9, dim)
+        
+    def test_learnable_scale_transformation(self):
+        """Test that learnable scaling actually transforms the spacing."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        batch_size, seq_len = 2, 9
+        
+        # Create two identical layers, one with learnable scaling
+        layer_normal = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=False,
+        )
+        
+        layer_learnable = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+        )
+        
+        # Initially, with default parameters (a=1, b=1, c=0), they should be similar
+        # since the transformation becomes: spacing = 1 * spacing + spacing ** 1 + 0 * log(spacing) = 2 * spacing
+        x = torch.randn(batch_size, seq_len, dim)
+        grid_shape = (3, 3)
+        spacing = (1.0, 1.0)
+        
+        output_normal = layer_normal(x, spacing, grid_shape, flatten=True)
+        output_learnable = layer_learnable(x, spacing, grid_shape, flatten=True)
+        
+        # They should be different because the learnable version transforms spacing
+        assert not torch.allclose(output_normal, output_learnable, atol=1e-6), \
+            "Outputs should be different when learnable scaling is enabled"
+        
+        # Now modify the scale parameters to test the transformation
+        with torch.no_grad():
+            layer_learnable.scale_a.fill_(2.0)  # a = 2
+            layer_learnable.scale_b.fill_(0.0)  # b = 0 (effectively scale^0 = 1)
+            layer_learnable.scale_c.fill_(0.0)  # c = 0
+            
+        # This should give: scale = 2 * scale + scale^0 + 0 * log(scale) = 2 * scale + 1
+        output_modified = layer_learnable(x, spacing, grid_shape, flatten=True)
+        
+        # Should be different from both previous outputs
+        assert not torch.allclose(output_normal, output_modified, atol=1e-6)
+        assert not torch.allclose(output_learnable, output_modified, atol=1e-6)
+
 
 class TestRoSENumericalProperties:
     """Test mathematical properties of RoSE implementation."""
