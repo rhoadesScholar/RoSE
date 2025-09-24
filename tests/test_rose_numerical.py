@@ -817,6 +817,78 @@ class TestRotarySpatialEmbedding:
         # Should produce identical results since both start with same parameter values
         assert torch.allclose(output_fixed_log, output_learnable_log, atol=1e-6)
 
+    def test_extreme_spacing_values(self):
+        """Test that extreme spacing values are handled correctly without artificial clamping."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        
+        # Create layers with different scaling modes
+        layer_normal = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=False,
+            log_scale=False,
+        )
+        
+        layer_learnable = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+            log_scale=False,
+        )
+        
+        x = torch.randn(2, 9, dim)
+        grid_shape = (3, 3)
+        
+        # Test extreme spacing values that should not be artificially clamped
+        extreme_spacings = [
+            (1e-9, 1e-9),     # Nanometers
+            (1e-6, 1e-6),     # Micrometers  
+            (1e-3, 1e-3),     # Millimeters
+            (1.0, 1.0),       # Meters
+            (1e3, 1e3),       # Kilometers
+            (1e-9, 1e3),      # Mixed scales (nanometers to kilometers)
+            (0.0, 1.0),       # Edge case: zero spacing
+        ]
+        
+        for spacing in extreme_spacings:
+            # All spacings should work without errors
+            try:
+                output_normal = layer_normal(x, spacing, grid_shape, flatten=True)
+                output_learnable = layer_learnable(x, spacing, grid_shape, flatten=True)
+                
+                # Check output shapes are correct
+                assert output_normal.shape == (2, 9, dim)
+                assert output_learnable.shape == (2, 9, dim)
+                
+                # Check outputs are finite (no inf/nan)
+                assert torch.all(torch.isfinite(output_normal))
+                assert torch.all(torch.isfinite(output_learnable))
+                
+            except Exception as e:
+                pytest.fail(f"Failed with spacing {spacing}: {e}")
+        
+        # Test that different extreme spacings produce different results
+        nano_output = layer_learnable(x, (1e-9, 1e-9), grid_shape, flatten=True)
+        kilo_output = layer_learnable(x, (1e3, 1e3), grid_shape, flatten=True) 
+        
+        # These should be different due to different spatial relationships
+        assert not torch.allclose(nano_output, kilo_output, atol=1e-6)
+        
+        # Test magnitude preservation is maintained even for extreme scales
+        original_norm = torch.norm(x, dim=-1)
+        
+        for spacing in [(1e-9, 1e-9), (1e3, 1e3)]:
+            output = layer_normal(x, spacing, grid_shape, flatten=True)
+            rotated_norm = torch.norm(output, dim=-1)
+            max_norm_diff = torch.abs(original_norm - rotated_norm).max()
+            
+            # Allow slightly larger tolerance for extreme scales
+            assert max_norm_diff < 1e-4, f"Magnitude not preserved for spacing {spacing}"
+
 
 class TestRoSENumericalProperties:
     """Test mathematical properties of RoSE implementation."""

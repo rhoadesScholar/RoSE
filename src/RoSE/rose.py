@@ -286,8 +286,7 @@ class RotarySpatialEmbedding(nn.Module):
             spacing_tensor = torch.tensor(spacing, device=x.device, dtype=x.dtype)
             
             # Apply scaling: scale = a * scale ** b + c * log(scale / d)
-            # Clamp scale to avoid numerical issues with log and power operations
-            spacing_clamped = torch.clamp(spacing_tensor, min=1e-8)
+            # Note: We don't clamp input spacing to preserve user-specified scales (e.g., nanometers)
             
             # Move scale parameters to the same device as input for efficient computation
             scale_a = self.scale_a.to(device=x.device, dtype=x.dtype)
@@ -295,16 +294,38 @@ class RotarySpatialEmbedding(nn.Module):
             scale_c = self.scale_c.to(device=x.device, dtype=x.dtype)
             scale_d = self.scale_d.to(device=x.device, dtype=x.dtype)
             
-            # Clamp scale_d to avoid division by zero
+            # Clamp scale_d to avoid division by zero in log term
             scale_d_clamped = torch.clamp(scale_d, min=1e-8)
             
-            scaled_spacing = (
-                scale_a * torch.pow(spacing_clamped, scale_b) +
-                scale_c * torch.log(spacing_clamped / scale_d_clamped)
+            # For log and power operations, we need to handle edge cases without clamping input
+            # Use torch.where to handle zero/negative spacing values gracefully
+            safe_spacing = torch.where(spacing_tensor > 0, spacing_tensor, torch.ones_like(spacing_tensor))
+            safe_log_term = torch.where(
+                spacing_tensor > 0,
+                torch.log(safe_spacing / scale_d_clamped),
+                torch.zeros_like(spacing_tensor)  # Use 0 for log of non-positive values
+            )
+            safe_power_term = torch.where(
+                spacing_tensor > 0,
+                torch.pow(safe_spacing, scale_b),
+                torch.zeros_like(spacing_tensor)  # Use 0 for power of non-positive values
             )
             
-            # Apply scaling to position tensor directly without redundant tensor creation
-            scaling_factor = scaled_spacing / spacing_clamped  # (spatial_dims,)
+            scaled_spacing = scale_a * safe_power_term + scale_c * safe_log_term
+            
+            # Compute scaling factor and validate for numerical stability
+            scaling_factor = torch.where(
+                spacing_tensor != 0,
+                scaled_spacing / spacing_tensor,
+                torch.ones_like(spacing_tensor)  # Identity scaling for zero spacing
+            )
+            
+            # Check for invalid values (inf, nan) in scaling factor and replace with identity
+            scaling_factor = torch.where(
+                torch.isfinite(scaling_factor),
+                scaling_factor,
+                torch.ones_like(scaling_factor)  # Use identity scaling for invalid values
+            )
             pos = pos * scaling_factor.unsqueeze(0)  # (N, spatial_dims)
 
         # Get phase vectors
