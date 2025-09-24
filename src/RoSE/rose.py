@@ -86,8 +86,10 @@ class RotarySpatialEmbedding(nn.Module):
                         rotations across large scale differences. When True, adds learnable 
                         parameters a, b, c, d that transform spacing as: 
                         scale = a * scale ** b + c * log(scale / d)
-        log_scale: When True and learnable_scale=True, initializes parameters for log-only scaling
-                  (a=0, b=c=d=1). When False, uses default initialization (a=b=d=1, c=0).
+        log_scale: Enable logarithmic scaling transformation. When True, applies log scaling
+                  either as learnable parameters (if learnable_scale=True) or fixed parameters
+                  (if learnable_scale=False). Uses initialization: a=0, b=c=d=1 for log scaling,
+                  or a=b=d=1, c=0 for identity/power scaling.
     """
 
     def __init__(
@@ -168,21 +170,34 @@ class RotarySpatialEmbedding(nn.Module):
                 self.register_buffer("freqs", freqs, persistent=False)
         
         # Initialize learnable spatial scale parameters
-        if learnable_scale:
+        if learnable_scale or log_scale:
             # Initialize learnable scale parameters a, b, c, d
             # scale = a * scale ** b + c * log(scale / d)
             if log_scale:
                 # log_scale mode: b=c=d=1, a=0
-                self.scale_a = nn.Parameter(torch.zeros(spatial_dims))
-                self.scale_b = nn.Parameter(torch.ones(spatial_dims))  
-                self.scale_c = nn.Parameter(torch.ones(spatial_dims))
-                self.scale_d = nn.Parameter(torch.ones(spatial_dims))
+                scale_a_init = torch.zeros(spatial_dims)
+                scale_b_init = torch.ones(spatial_dims)  
+                scale_c_init = torch.ones(spatial_dims)
+                scale_d_init = torch.ones(spatial_dims)
             else:
                 # Default mode: a=b=d=1, c=0
-                self.scale_a = nn.Parameter(torch.ones(spatial_dims))
-                self.scale_b = nn.Parameter(torch.ones(spatial_dims))  
-                self.scale_c = nn.Parameter(torch.zeros(spatial_dims))
-                self.scale_d = nn.Parameter(torch.ones(spatial_dims))
+                scale_a_init = torch.ones(spatial_dims)
+                scale_b_init = torch.ones(spatial_dims)  
+                scale_c_init = torch.zeros(spatial_dims)
+                scale_d_init = torch.ones(spatial_dims)
+            
+            if learnable_scale:
+                # Create learnable parameters
+                self.scale_a = nn.Parameter(scale_a_init)
+                self.scale_b = nn.Parameter(scale_b_init)  
+                self.scale_c = nn.Parameter(scale_c_init)
+                self.scale_d = nn.Parameter(scale_d_init)
+            else:
+                # Create fixed buffers (non-learnable)
+                self.register_buffer("scale_a", scale_a_init, persistent=False)
+                self.register_buffer("scale_b", scale_b_init, persistent=False)
+                self.register_buffer("scale_c", scale_c_init, persistent=False)
+                self.register_buffer("scale_d", scale_d_init, persistent=False)
 
     def _get_complex_split(self, rotary_x: torch.Tensor) -> torch.Tensor:
         # rotary_x shape: (B, N, H, dims_per_head)
@@ -265,12 +280,12 @@ class RotarySpatialEmbedding(nn.Module):
         # (N, spatial_dims)
         pos = _init_p_nd(grid_shape, spacing=spacing, dtype=x.dtype, device=x.device)
         
-        # Apply learnable scaling to the position tensor if enabled
-        if self.learnable_scale:
+        # Apply scaling to the position tensor if enabled
+        if self.learnable_scale or self.log_scale:
             # Convert spacing to tensor once with consistent device/dtype
             spacing_tensor = torch.tensor(spacing, device=x.device, dtype=x.dtype)
             
-            # Apply learnable scaling: scale = a * scale ** b + c * log(scale / d)
+            # Apply scaling: scale = a * scale ** b + c * log(scale / d)
             # Clamp scale to avoid numerical issues with log and power operations
             spacing_clamped = torch.clamp(spacing_tensor, min=1e-8)
             

@@ -742,6 +742,81 @@ class TestRotarySpatialEmbedding:
         assert torch.allclose(output_default, output_default2)
         assert torch.allclose(output_log, output_log2)
 
+    def test_log_scale_without_learnable(self):
+        """Test that log_scale=True works correctly even when learnable_scale=False."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        
+        # Test fixed log scaling (non-learnable)
+        layer_fixed_log = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=False,  # Not learnable
+            log_scale=True,         # But still apply log scaling
+        )
+        
+        # Test normal fixed scaling for comparison
+        layer_fixed_normal = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=False,
+            log_scale=False,
+        )
+        
+        # Check that scale parameters exist and have correct values for fixed log scaling
+        assert hasattr(layer_fixed_log, 'scale_a'), "Fixed log scaling should have scale_a"
+        assert hasattr(layer_fixed_log, 'scale_b'), "Fixed log scaling should have scale_b"
+        assert hasattr(layer_fixed_log, 'scale_c'), "Fixed log scaling should have scale_c" 
+        assert hasattr(layer_fixed_log, 'scale_d'), "Fixed log scaling should have scale_d"
+        
+        # Check parameter values (a=0, b=c=d=1 for log scaling)
+        assert torch.allclose(layer_fixed_log.scale_a, torch.zeros(spatial_dims))
+        assert torch.allclose(layer_fixed_log.scale_b, torch.ones(spatial_dims))
+        assert torch.allclose(layer_fixed_log.scale_c, torch.ones(spatial_dims))
+        assert torch.allclose(layer_fixed_log.scale_d, torch.ones(spatial_dims))
+        
+        # Check that parameters are not learnable (should be buffers, not Parameters)
+        assert not isinstance(layer_fixed_log.scale_a, torch.nn.Parameter)
+        assert not isinstance(layer_fixed_log.scale_b, torch.nn.Parameter)
+        assert not isinstance(layer_fixed_log.scale_c, torch.nn.Parameter)
+        assert not isinstance(layer_fixed_log.scale_d, torch.nn.Parameter)
+        
+        # Normal fixed scaling should not have these parameters
+        assert not hasattr(layer_fixed_normal, 'scale_a'), "Normal fixed scaling should not have scale_a"
+        
+        # Test forward pass
+        x = torch.randn(2, 9, dim)
+        spacing = (2.0, 3.0)  # Use non-unit spacing to see the effect
+        grid_shape = (3, 3)
+        
+        output_fixed_log = layer_fixed_log(x, spacing, grid_shape, flatten=True)
+        output_fixed_normal = layer_fixed_normal(x, spacing, grid_shape, flatten=True)
+        
+        # Outputs should be different due to log scaling
+        assert not torch.allclose(output_fixed_log, output_fixed_normal, atol=1e-6)
+        
+        # Test that fixed log scaling is deterministic
+        output_fixed_log2 = layer_fixed_log(x, spacing, grid_shape, flatten=True)
+        assert torch.allclose(output_fixed_log, output_fixed_log2)
+        
+        # Test comparison with learnable log scaling (should produce same results initially)
+        layer_learnable_log = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+            log_scale=True,
+        )
+        
+        output_learnable_log = layer_learnable_log(x, spacing, grid_shape, flatten=True)
+        
+        # Should produce identical results since both start with same parameter values
+        assert torch.allclose(output_fixed_log, output_learnable_log, atol=1e-6)
+
 
 class TestRoSENumericalProperties:
     """Test mathematical properties of RoSE implementation."""

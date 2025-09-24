@@ -212,10 +212,11 @@ x_embedded = embedding(x, spacing, grid_shape)  # Shape: (batch_size, seq_len, 1
   - When `True`, adds learnable parameters that transform spatial coordinates
   - Uses equation: `scale = a * scale ** b + c * log(scale / d)`
   - Helps handle rotations across different spatial scales automatically
-- **`log_scale`**: Initialize learnable scaling for logarithmic transformation (default: False)
-  - Only used when `learnable_scale=True`
+- **`log_scale`**: Enable logarithmic scaling transformation (default: False)
+  - Works with both `learnable_scale=True` (learnable parameters) and `learnable_scale=False` (fixed parameters)
   - When `True`: initializes for pure log scaling (`a=0, b=c=d=1`)
   - When `False`: initializes for identity transform (`a=b=d=1, c=0`)
+  - Useful for data with large coordinate ranges or logarithmic relationships
 
 ## Advanced Examples
 
@@ -418,6 +419,54 @@ print(f"d={geo_embedding.scale_d.data} (should be ~1)")
 print("Equation: scale = a * scale^b + c * log(scale/d)")
 ```
 
+### Fixed Logarithmic Scaling
+
+You can also use logarithmic scaling with fixed (non-learnable) parameters, which is useful when you know logarithmic scaling is appropriate but don't want the computational overhead of learnable parameters:
+
+```python
+import torch
+from RoSE import RotarySpatialEmbedding
+
+# Example: Fixed log scaling for geographic data
+fixed_log_embedding = RotarySpatialEmbedding(
+    feature_dims=128,
+    num_heads=8,
+    spatial_dims=2,
+    learnable=False,
+    learnable_scale=False,  # Fixed (non-learnable) parameters
+    log_scale=True,         # But still apply log scaling transformation
+    frequency_scaling="adaptive"
+)
+
+# The parameters are fixed at: a=0, b=c=d=1
+# Equation becomes: scale = 0 * scale^1 + 1 * log(scale/1) = log(scale)
+
+# Test with large coordinate values
+batch_size, num_locations = 2, 1600
+features = torch.randn(batch_size, num_locations, 128)
+
+# Large coordinate ranges (e.g., geographic coordinates in meters)
+grid_shape = (40, 40)
+spacing = (1000.0, 1500.0)  # 1km x 1.5km spacing
+
+# Fixed log scaling handles large values without learnable overhead
+result = fixed_log_embedding(features, spacing, grid_shape)
+
+print("Fixed log scaling - no learnable parameters, but applies log transformation")
+print(f"Output shape: {result.shape}")
+
+# Compare with normal fixed scaling
+normal_embedding = RotarySpatialEmbedding(
+    feature_dims=128, num_heads=8, spatial_dims=2,
+    learnable_scale=False, log_scale=False
+)
+
+normal_result = normal_embedding(features, spacing, grid_shape)
+
+# Results should be different due to log scaling
+print(f"Results differ: {not torch.allclose(result, normal_result, atol=1e-6)}")
+```
+
 ### Comparing Fixed vs. Learnable Scaling
 
 ```python
@@ -524,6 +573,7 @@ print(f"Transformer output shape: {result.shape}")
    - Geographic or astronomical data with large coordinate ranges
    - Data where logarithmic relationships are expected
    - When linear scaling proves insufficient
+   - Can be used with either learnable (`learnable_scale=True`) or fixed (`learnable_scale=False`) parameters
 8. **Performance**: Learnable scaling adds 4 parameters per spatial dimension but can significantly improve model performance on spatially diverse data
 
 ## License
