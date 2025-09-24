@@ -254,23 +254,26 @@ class RotarySpatialEmbedding(nn.Module):
         
         # Apply learnable scaling to the position tensor if enabled
         if self.learnable_scale:
-            # Convert spacing to tensor for gradient computation
-            spacing_tensor = torch.tensor(spacing, device=self.scale_a.device, dtype=self.scale_a.dtype)
+            # Convert spacing to tensor once with consistent device/dtype
+            spacing_tensor = torch.tensor(spacing, device=x.device, dtype=x.dtype)
             
             # Apply learnable scaling: scale = a * scale + scale ** b + c * log(scale)
             # Clamp scale to avoid numerical issues with log and power operations
             spacing_clamped = torch.clamp(spacing_tensor, min=1e-8)
             
+            # Move scale parameters to the same device as input for efficient computation
+            scale_a = self.scale_a.to(device=x.device, dtype=x.dtype)
+            scale_b = self.scale_b.to(device=x.device, dtype=x.dtype)
+            scale_c = self.scale_c.to(device=x.device, dtype=x.dtype)
+            
             scaled_spacing = (
-                self.scale_a * spacing_clamped +
-                torch.pow(spacing_clamped, self.scale_b) +
-                self.scale_c * torch.log(spacing_clamped)
+                scale_a * spacing_clamped +
+                torch.pow(spacing_clamped, scale_b) +
+                scale_c * torch.log(spacing_clamped)
             )
             
-            # Apply scaling to position tensor
-            # pos is (N, spatial_dims), we need to scale each dimension
-            original_spacing_tensor = torch.tensor(spacing, device=pos.device, dtype=pos.dtype)
-            scaling_factor = scaled_spacing / original_spacing_tensor  # (spatial_dims,)
+            # Apply scaling to position tensor directly without redundant tensor creation
+            scaling_factor = scaled_spacing / spacing_clamped  # (spatial_dims,)
             pos = pos * scaling_factor.unsqueeze(0)  # (N, spatial_dims)
 
         # Get phase vectors
