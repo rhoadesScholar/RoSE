@@ -620,7 +620,7 @@ class TestRotarySpatialEmbedding:
             layer_learnable.scale_b.fill_(0.0)  # b = 0 (effectively scale^0 = 1)
             layer_learnable.scale_c.fill_(0.0)  # c = 0
             
-        # This should give: scale = 2 * scale + scale^0 + 0 * log(scale) = 2 * scale + 1
+        # This should give: scale = 2 * scale ** 0 + 0 * log(scale / 1) = 2 * 1 = 2 (constant)
         output_modified = layer_learnable(x, spacing, grid_shape, flatten=True)
         
         # Should be different from both previous outputs
