@@ -601,7 +601,7 @@ class TestRotarySpatialEmbedding:
             learnable_scale=True,
         )
         
-        # Initially, with default parameters (a=1, b=1, c=0), they should be similar
+        # With default parameters (a=1, b=1, c=0), they should be different
         # since the transformation becomes: spacing = 1 * spacing + spacing ** 1 + 0 * log(spacing) = 2 * spacing
         x = torch.randn(batch_size, seq_len, dim)
         grid_shape = (3, 3)
@@ -626,6 +626,16 @@ class TestRotarySpatialEmbedding:
         # Should be different from both previous outputs
         assert not torch.allclose(output_normal, output_modified, atol=1e-6)
         assert not torch.allclose(output_learnable, output_modified, atol=1e-6)
+        
+        # Test gradient flow through modified parameters
+        x_grad = torch.randn(batch_size, seq_len, dim, requires_grad=True)
+        output_grad = layer_learnable(x_grad, spacing, grid_shape, flatten=True)
+        loss = output_grad.sum()
+        loss.backward()
+        
+        assert layer_learnable.scale_a.grad is not None
+        assert layer_learnable.scale_b.grad is not None
+        assert layer_learnable.scale_c.grad is not None
 
 
 class TestRoSENumericalProperties:

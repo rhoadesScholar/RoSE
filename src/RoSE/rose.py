@@ -171,27 +171,6 @@ class RotarySpatialEmbedding(nn.Module):
             self.scale_b = nn.Parameter(torch.ones(spatial_dims))  
             self.scale_c = nn.Parameter(torch.zeros(spatial_dims))
 
-    def _apply_learnable_scaling(self, spacing: Tuple[float, ...]) -> Tuple[float, ...]:
-        """Apply learnable scaling transformation to spatial spacing."""
-        if not self.learnable_scale:
-            return spacing
-            
-        # Convert spacing to tensor for computation
-        spacing_tensor = torch.tensor(spacing, device=self.scale_a.device, dtype=self.scale_a.dtype)
-        
-        # Apply learnable scaling: scale = a * scale + scale ** b + c * log(scale)
-        # Clamp scale to avoid numerical issues with log and power operations
-        spacing_clamped = torch.clamp(spacing_tensor, min=1e-8)
-        
-        scaled_spacing = (
-            self.scale_a * spacing_clamped +
-            torch.pow(spacing_clamped, self.scale_b) +
-            self.scale_c * torch.log(spacing_clamped)
-        )
-        
-        # Convert back to tuple
-        return tuple(scaled_spacing.tolist())
-
     def _get_complex_split(self, rotary_x: torch.Tensor) -> torch.Tensor:
         # rotary_x shape: (B, N, H, dims_per_head)
         rotary_x = rotary_x.view(
@@ -271,8 +250,28 @@ class RotarySpatialEmbedding(nn.Module):
 
         # Get position tensor with learnable scaling applied to spacing
         # (N, spatial_dims)
-        scaled_spacing = self._apply_learnable_scaling(spacing)
-        pos = _init_p_nd(grid_shape, spacing=scaled_spacing, dtype=x.dtype, device=x.device)
+        pos = _init_p_nd(grid_shape, spacing=spacing, dtype=x.dtype, device=x.device)
+        
+        # Apply learnable scaling to the position tensor if enabled
+        if self.learnable_scale:
+            # Convert spacing to tensor for gradient computation
+            spacing_tensor = torch.tensor(spacing, device=self.scale_a.device, dtype=self.scale_a.dtype)
+            
+            # Apply learnable scaling: scale = a * scale + scale ** b + c * log(scale)
+            # Clamp scale to avoid numerical issues with log and power operations
+            spacing_clamped = torch.clamp(spacing_tensor, min=1e-8)
+            
+            scaled_spacing = (
+                self.scale_a * spacing_clamped +
+                torch.pow(spacing_clamped, self.scale_b) +
+                self.scale_c * torch.log(spacing_clamped)
+            )
+            
+            # Apply scaling to position tensor
+            # pos is (N, spatial_dims), we need to scale each dimension
+            original_spacing_tensor = torch.tensor(spacing, device=pos.device, dtype=pos.dtype)
+            scaling_factor = scaled_spacing / original_spacing_tensor  # (spatial_dims,)
+            pos = pos * scaling_factor.unsqueeze(0)  # (N, spatial_dims)
 
         # Get phase vectors
         ph_x = torch.einsum("td,hpd->thp", pos, self.freqs)  # (N, rotary_heads, P)
@@ -343,6 +342,8 @@ class RoSEMultiHeadCrossAttention(nn.Module):
         init_jitter_std: Standard deviation for frequency initialization jitter
         rotary_ratio: Fraction of embedding dimension to apply rotation to (0.0 to 1.0)
         frequency_scaling: Frequency scaling method ("sqrt", "linear", etc.)
+        learnable_scale: Whether to enable learnable scaling of spatial scale to better handle
+                        rotations across large scale differences.
     """
 
     def __init__(
@@ -355,6 +356,7 @@ class RoSEMultiHeadCrossAttention(nn.Module):
         init_jitter_std: float = 0.02,
         rotary_ratio: float = 1.0,
         frequency_scaling: str = "sqrt",
+        learnable_scale: bool = False,
     ):
         super().__init__()
         assert feature_dims % num_heads == 0, "dim must be divisible by num_heads"
@@ -375,6 +377,7 @@ class RoSEMultiHeadCrossAttention(nn.Module):
             "init_jitter_std": init_jitter_std,
             "rotary_ratio": rotary_ratio,
             "frequency_scaling": frequency_scaling,
+            "learnable_scale": learnable_scale,
         }
         self.rose = RotarySpatialEmbedding(**pe_kwargs)
 
