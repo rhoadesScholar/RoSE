@@ -84,8 +84,10 @@ class RotarySpatialEmbedding(nn.Module):
         frequency_scaling: Scaling strategy for frequencies ("none", "linear", "sqrt", "adaptive")
         learnable_scale: Whether to enable learnable scaling of spatial scale to better handle
                         rotations across large scale differences. When True, adds learnable 
-                        parameters a, b, c that transform spacing as: 
-                        scale = a * scale + scale ** b + c * log(scale)
+                        parameters a, b, c, d that transform spacing as: 
+                        scale = a * scale ** b + c * log(scale / d)
+        log_scale: When True and learnable_scale=True, initializes parameters for log-only scaling
+                  (a=0, b=c=d=1). When False, uses default initialization (a=b=d=1, c=0).
     """
 
     def __init__(
@@ -99,6 +101,7 @@ class RotarySpatialEmbedding(nn.Module):
         frequency_scaling: str = "sqrt",
         rotary_ratio: float = 1.0,
         learnable_scale: bool = False,
+        log_scale: bool = False,
     ):
         super().__init__()
         assert feature_dims % num_heads == 0, "dim must be divisible by num_heads"
@@ -114,6 +117,7 @@ class RotarySpatialEmbedding(nn.Module):
         self.rotary_ratio = rotary_ratio
         self.learnable = learnable
         self.learnable_scale = learnable_scale
+        self.log_scale = log_scale
 
         # Calculate dimensions for rotary embedding
         self.rotary_dim = int(self.feature_dims * rotary_ratio)
@@ -165,11 +169,20 @@ class RotarySpatialEmbedding(nn.Module):
         
         # Initialize learnable spatial scale parameters
         if learnable_scale:
-            # Initialize learnable scale parameters a, b, c
-            # scale = a * scale + scale ** b + c * log(scale) + ...
-            self.scale_a = nn.Parameter(torch.ones(spatial_dims))
-            self.scale_b = nn.Parameter(torch.ones(spatial_dims))  
-            self.scale_c = nn.Parameter(torch.zeros(spatial_dims))
+            # Initialize learnable scale parameters a, b, c, d
+            # scale = a * scale ** b + c * log(scale / d)
+            if log_scale:
+                # log_scale mode: b=c=d=1, a=0
+                self.scale_a = nn.Parameter(torch.zeros(spatial_dims))
+                self.scale_b = nn.Parameter(torch.ones(spatial_dims))  
+                self.scale_c = nn.Parameter(torch.ones(spatial_dims))
+                self.scale_d = nn.Parameter(torch.ones(spatial_dims))
+            else:
+                # Default mode: a=b=d=1, c=0
+                self.scale_a = nn.Parameter(torch.ones(spatial_dims))
+                self.scale_b = nn.Parameter(torch.ones(spatial_dims))  
+                self.scale_c = nn.Parameter(torch.zeros(spatial_dims))
+                self.scale_d = nn.Parameter(torch.ones(spatial_dims))
 
     def _get_complex_split(self, rotary_x: torch.Tensor) -> torch.Tensor:
         # rotary_x shape: (B, N, H, dims_per_head)
@@ -257,7 +270,7 @@ class RotarySpatialEmbedding(nn.Module):
             # Convert spacing to tensor once with consistent device/dtype
             spacing_tensor = torch.tensor(spacing, device=x.device, dtype=x.dtype)
             
-            # Apply learnable scaling: scale = a * scale + scale ** b + c * log(scale)
+            # Apply learnable scaling: scale = a * scale ** b + c * log(scale / d)
             # Clamp scale to avoid numerical issues with log and power operations
             spacing_clamped = torch.clamp(spacing_tensor, min=1e-8)
             
@@ -265,11 +278,14 @@ class RotarySpatialEmbedding(nn.Module):
             scale_a = self.scale_a.to(device=x.device, dtype=x.dtype)
             scale_b = self.scale_b.to(device=x.device, dtype=x.dtype)
             scale_c = self.scale_c.to(device=x.device, dtype=x.dtype)
+            scale_d = self.scale_d.to(device=x.device, dtype=x.dtype)
+            
+            # Clamp scale_d to avoid division by zero
+            scale_d_clamped = torch.clamp(scale_d, min=1e-8)
             
             scaled_spacing = (
-                scale_a * spacing_clamped +
-                torch.pow(spacing_clamped, scale_b) +
-                scale_c * torch.log(spacing_clamped)
+                scale_a * torch.pow(spacing_clamped, scale_b) +
+                scale_c * torch.log(spacing_clamped / scale_d_clamped)
             )
             
             # Apply scaling to position tensor directly without redundant tensor creation
@@ -347,6 +363,7 @@ class RoSEMultiHeadCrossAttention(nn.Module):
         frequency_scaling: Frequency scaling method ("sqrt", "linear", etc.)
         learnable_scale: Whether to enable learnable scaling of spatial scale to better handle
                         rotations across large scale differences.
+        log_scale: When True and learnable_scale=True, initializes parameters for log-only scaling.
     """
 
     def __init__(
@@ -360,6 +377,7 @@ class RoSEMultiHeadCrossAttention(nn.Module):
         rotary_ratio: float = 1.0,
         frequency_scaling: str = "sqrt",
         learnable_scale: bool = False,
+        log_scale: bool = False,
     ):
         super().__init__()
         assert feature_dims % num_heads == 0, "dim must be divisible by num_heads"
@@ -381,6 +399,7 @@ class RoSEMultiHeadCrossAttention(nn.Module):
             "rotary_ratio": rotary_ratio,
             "frequency_scaling": frequency_scaling,
             "learnable_scale": learnable_scale,
+            "log_scale": log_scale,
         }
         self.rose = RotarySpatialEmbedding(**pe_kwargs)
 
@@ -434,6 +453,7 @@ class MultiRes_RoSE_Block(nn.Module):
         rotary_ratio: float = 1.0,
         frequency_scaling: str = "sqrt",
         learnable_scale: bool = False,
+        log_scale: bool = False,
         mlp_ratio: float = 4.0,
         mlp_dropout: float = 0.0,
         mlp_bias: bool = True,
@@ -474,6 +494,7 @@ class MultiRes_RoSE_Block(nn.Module):
             rotary_ratio=rotary_ratio,
             frequency_scaling=frequency_scaling,
             learnable_scale=learnable_scale,
+            log_scale=log_scale,
         )
 
         # Attention components

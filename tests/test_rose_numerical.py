@@ -637,6 +637,111 @@ class TestRotarySpatialEmbedding:
         assert layer_learnable.scale_b.grad is not None
         assert layer_learnable.scale_c.grad is not None
 
+    def test_new_scaling_equation_parameters(self):
+        """Test the new scaling equation and parameter initialization."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        
+        # Test default mode parameters (a=b=d=1, c=0)
+        layer_default = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+            log_scale=False,
+        )
+        
+        assert torch.allclose(layer_default.scale_a, torch.ones(spatial_dims))
+        assert torch.allclose(layer_default.scale_b, torch.ones(spatial_dims))
+        assert torch.allclose(layer_default.scale_c, torch.zeros(spatial_dims))
+        assert torch.allclose(layer_default.scale_d, torch.ones(spatial_dims))
+        
+        # Test log_scale mode parameters (a=0, b=c=d=1)
+        layer_log = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+            log_scale=True,
+        )
+        
+        assert torch.allclose(layer_log.scale_a, torch.zeros(spatial_dims))
+        assert torch.allclose(layer_log.scale_b, torch.ones(spatial_dims))
+        assert torch.allclose(layer_log.scale_c, torch.ones(spatial_dims))
+        assert torch.allclose(layer_log.scale_d, torch.ones(spatial_dims))
+        
+        # Test that both modes produce valid outputs
+        x = torch.randn(2, 9, dim)
+        spacing = (1.0, 1.0)
+        grid_shape = (3, 3)
+        
+        output_default = layer_default(x, spacing, grid_shape, flatten=True)
+        output_log = layer_log(x, spacing, grid_shape, flatten=True)
+        
+        assert output_default.shape == (2, 9, dim)
+        assert output_log.shape == (2, 9, dim)
+        
+        # Outputs should be different between modes
+        assert not torch.allclose(output_default, output_log, atol=1e-6)
+        
+        # Test gradient flow for new parameter d
+        x_grad = torch.randn(2, 9, dim, requires_grad=True)
+        output_grad = layer_default(x_grad, spacing, grid_shape, flatten=True)
+        loss = output_grad.sum()
+        loss.backward()
+        
+        assert layer_default.scale_a.grad is not None
+        assert layer_default.scale_b.grad is not None
+        assert layer_default.scale_c.grad is not None
+        assert layer_default.scale_d.grad is not None
+
+    def test_scaling_equation_mathematical_properties(self):
+        """Test mathematical properties of the new scaling equation."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+        
+        # Test that default parameters give identity-like transform
+        layer_default = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+            log_scale=False,
+        )
+        
+        # With default parameters (a=b=d=1, c=0), the equation becomes:
+        # scale = 1 * scale^1 + 0 * log(scale/1) = scale (identity)
+        x = torch.randn(2, 9, dim)
+        spacing = (2.0, 3.0)  # Use non-unit spacing
+        grid_shape = (3, 3)
+        
+        output_default = layer_default(x, spacing, grid_shape, flatten=True)
+        
+        # Test log_scale mode gives different behavior
+        layer_log = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+            log_scale=True,
+        )
+        
+        # With log parameters (a=0, b=c=d=1), the equation becomes:
+        # scale = 0 * scale^1 + 1 * log(scale/1) = log(scale)
+        output_log = layer_log(x, spacing, grid_shape, flatten=True)
+        
+        # Should produce different results
+        assert not torch.allclose(output_default, output_log, atol=1e-6)
+        
+        # Test mathematical consistency: both should be deterministic
+        output_default2 = layer_default(x, spacing, grid_shape, flatten=True)
+        output_log2 = layer_log(x, spacing, grid_shape, flatten=True)
+        
+        assert torch.allclose(output_default, output_default2)
+        assert torch.allclose(output_log, output_log2)
+
 
 class TestRoSENumericalProperties:
     """Test mathematical properties of RoSE implementation."""
