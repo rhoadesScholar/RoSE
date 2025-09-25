@@ -105,12 +105,13 @@ from RoSE import RoSEMultiHeadCrossAttention
 
 # Create RoSE multi-head attention layer
 layer = RoSEMultiHeadCrossAttention(
-    dim=128,
+    feature_dims=128,
     num_heads=8,
     spatial_dims=3,
     learnable=True,
     base_theta=1e4,
-    rotary_ratio=1.0  # Apply rotation to all dimensions (default)
+    rotary_ratio=1.0,  # Apply rotation to all dimensions (default)
+    learnable_scale=False  # Set to True for adaptive spatial scaling
 )
 
 batch_size, seq_len = 2, 1000
@@ -135,7 +136,7 @@ from RoSE import RotarySpatialEmbedding
 
 # Apply rotation to only 50% of the embedding dimensions
 embedding = RotarySpatialEmbedding(
-    dim=128,
+    feature_dims=128,
     num_heads=8,
     spatial_dims=2,
     rotary_ratio=0.5,  # Only rotate first 50% of dimensions per head
@@ -165,12 +166,13 @@ from RoSE import RotarySpatialEmbedding
 
 # Create just the rotary spatial embedding layer
 embedding = RotarySpatialEmbedding(
-    dim=128,
+    feature_dims=128,
     num_heads=8,
     spatial_dims=2,
     learnable=False,
     frequency_scaling="sqrt",
-    rotary_ratio=1.0  # Apply rotation to all dimensions (default)
+    rotary_ratio=1.0,  # Apply rotation to all dimensions (default)
+    learnable_scale=False  # Set to True for adaptive spatial scaling
 )
 
 batch_size, seq_len = 2, 100
@@ -188,7 +190,7 @@ x_embedded = embedding(x, spacing, grid_shape)  # Shape: (batch_size, seq_len, 1
 
 ### Core Parameters
 
-- **`dim`**: Total embedding dimension (must be even and divisible by `num_heads`)
+- **`feature_dims`**: Total embedding dimension (must be even and divisible by `num_heads`)
 - **`num_heads`**: Number of attention heads
 - **`spatial_dims`**: Number of spatial dimensions (2 for 2D, 3 for 3D, etc.)
 - **`rotary_ratio`**: Fraction of embedding dimensions to apply rotation to (0.0 to 1.0, default: 1.0)
@@ -206,6 +208,15 @@ x_embedded = embedding(x, spacing, grid_shape)  # Shape: (batch_size, seq_len, 1
   - `"linear"`: Linear scaling with spatial dimensions
   - `"sqrt"`: Square root scaling with spatial dimensions
   - `"adaptive"`: Adaptive scaling based on spatial dims and embedding dim
+- **`learnable_scale`**: Enable learnable spatial scale transformation (default: False)
+  - When `True`, adds learnable parameters that transform spatial coordinates
+  - Uses equation: `scale = a * scale ** b + c * log(scale / d)`
+  - Helps handle rotations across different spatial scales automatically
+- **`log_scale`**: Enable logarithmic scaling transformation (default: False)
+  - Works with both `learnable_scale=True` (learnable parameters) and `learnable_scale=False` (fixed parameters)
+  - When `True`: initializes for pure log scaling (`a=0, b=c=d=1`)
+  - When `False`: initializes for identity transform (`a=b=d=1, c=0`)
+  - Useful for data with large coordinate ranges or logarithmic relationships
 
 ## Advanced Examples
 
@@ -222,7 +233,7 @@ num_heads = 8
 
 # Create embedding layer for 3D medical data
 embedding = RotarySpatialEmbedding(
-    dim=embedding_dim,
+    feature_dims=embedding_dim,
     num_heads=num_heads,
     spatial_dims=3,
     learnable=True,
@@ -252,7 +263,7 @@ from RoSE import RoSEMultiHeadCrossAttention
 # Example: Multi-scale microscopy with different zoom levels
 def create_multiscale_attention():
     return RoSEMultiHeadCrossAttention(
-        dim=512,
+        feature_dims=512,
         num_heads=16,
         spatial_dims=2,
         learnable=True,
@@ -291,10 +302,10 @@ from RoSE import RotarySpatialEmbedding
 
 # Example: Geographic coordinate system (lat/lon/elevation)
 class GeospatialEmbedding(torch.nn.Module):
-    def __init__(self, dim, num_heads):
+    def __init__(self, feature_dims, num_heads):
         super().__init__()
         self.spatial_embedding = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=feature_dims,
             num_heads=num_heads,
             spatial_dims=3,  # lat, lon, elevation
             learnable=True,
@@ -321,10 +332,174 @@ class GeospatialEmbedding(torch.nn.Module):
         return self.spatial_embedding(x, spacing, grid_shape)
 
 # Usage
-geo_embedding = GeospatialEmbedding(dim=256, num_heads=8)
+geo_embedding = GeospatialEmbedding(feature_dims=256, num_heads=8)
 features = torch.randn(2, 1000, 256)
 coordinates = torch.randn(2, 1000, 3)  # Random lat/lon/elevation
 result = geo_embedding(features, coordinates)
+```
+
+### Learnable Spatial Scale Adaptation
+
+The `learnable_scale` parameter enables automatic adaptation to different spatial scales during training, which is particularly useful for multi-resolution data or when the optimal spatial scaling is unknown:
+
+```python
+import torch
+from RoSE import RotarySpatialEmbedding
+
+# Example: Multi-resolution medical imaging with learnable scaling
+def create_adaptive_embedding():
+    return RotarySpatialEmbedding(
+        feature_dims=128,
+        num_heads=8,
+        spatial_dims=3,
+        learnable=True,
+        learnable_scale=True,  # Enable learnable spatial scaling
+        log_scale=False,       # Use default initialization (identity transform)
+        frequency_scaling="adaptive"
+    )
+
+# Create embeddings for different modalities/scales
+ct_embedding = create_adaptive_embedding()  # CT scan data
+mri_embedding = create_adaptive_embedding()  # MRI data
+
+# Different spatial resolutions and voxel sizes
+ct_data = torch.randn(1, 1000, 128)  # Lower resolution CT
+mri_data = torch.randn(1, 8000, 128)  # Higher resolution MRI
+
+ct_spacing = (1.0, 1.0, 3.0)    # 1mm x 1mm x 3mm
+mri_spacing = (0.5, 0.5, 0.5)   # 0.5mm isotropic
+
+ct_grid = (10, 10, 10)
+mri_grid = (20, 20, 20)
+
+# The learnable scaling will adapt to each modality's characteristics
+ct_result = ct_embedding(ct_data, ct_spacing, ct_grid)
+mri_result = mri_embedding(mri_data, mri_spacing, mri_grid)
+
+print("Learnable parameters adapt automatically to spatial characteristics")
+print(f"CT embedding scale parameters: a={ct_embedding.scale_a.data}, b={ct_embedding.scale_b.data}")
+print(f"MRI embedding scale parameters: a={mri_embedding.scale_a.data}, b={mri_embedding.scale_b.data}")
+```
+
+### Logarithmic Scaling for Large Dynamic Ranges
+
+For data with large spatial scale variations, you can use logarithmic scaling initialization:
+
+```python
+import torch
+from RoSE import RotarySpatialEmbedding
+
+# Example: Geographic data with large coordinate ranges
+geo_embedding = RotarySpatialEmbedding(
+    feature_dims=256,
+    num_heads=16,
+    spatial_dims=2,
+    learnable=True,
+    learnable_scale=True,  # Enable learnable scaling
+    log_scale=True,        # Initialize for logarithmic scaling
+    frequency_scaling="adaptive"
+)
+
+# Geographic coordinates can span large ranges
+batch_size, num_locations = 4, 2500
+features = torch.randn(batch_size, num_locations, 256)
+
+# Large coordinate ranges (e.g., global coordinates in meters)
+grid_shape = (50, 50)
+spacing = (1000.0, 1000.0)  # 1km spacing
+
+# The log_scale initialization helps handle large coordinate values
+result = geo_embedding(features, spacing, grid_shape)
+
+print("Log-scale initialization parameters:")
+print(f"a={geo_embedding.scale_a.data} (should be ~0)")
+print(f"b={geo_embedding.scale_b.data} (should be ~1)")
+print(f"c={geo_embedding.scale_c.data} (should be ~1)")
+print(f"d={geo_embedding.scale_d.data} (should be ~1)")
+print("Equation: scale = a * scale^b + c * log(scale/d)")
+```
+
+### Fixed Logarithmic Scaling
+
+You can also use logarithmic scaling with fixed (non-learnable) parameters, which is useful when you know logarithmic scaling is appropriate but don't want the computational overhead of learnable parameters:
+
+```python
+import torch
+from RoSE import RotarySpatialEmbedding
+
+# Example: Fixed log scaling for geographic data
+fixed_log_embedding = RotarySpatialEmbedding(
+    feature_dims=128,
+    num_heads=8,
+    spatial_dims=2,
+    learnable=False,
+    learnable_scale=False,  # Fixed (non-learnable) parameters
+    log_scale=True,         # But still apply log scaling transformation
+    frequency_scaling="adaptive"
+)
+
+# The parameters are fixed at: a=0, b=c=d=1
+# Equation becomes: scale = 0 * scale^1 + 1 * log(scale/1) = log(scale)
+
+# Test with large coordinate values
+batch_size, num_locations = 2, 1600
+features = torch.randn(batch_size, num_locations, 128)
+
+# Large coordinate ranges (e.g., geographic coordinates in meters)
+grid_shape = (40, 40)
+spacing = (1000.0, 1500.0)  # 1km x 1.5km spacing
+
+# Fixed log scaling handles large values without learnable overhead
+result = fixed_log_embedding(features, spacing, grid_shape)
+
+print("Fixed log scaling - no learnable parameters, but applies log transformation")
+print(f"Output shape: {result.shape}")
+
+# Compare with normal fixed scaling
+normal_embedding = RotarySpatialEmbedding(
+    feature_dims=128, num_heads=8, spatial_dims=2,
+    learnable_scale=False, log_scale=False
+)
+
+normal_result = normal_embedding(features, spacing, grid_shape)
+
+# Results should be different due to log scaling
+print(f"Results differ: {not torch.allclose(result, normal_result, atol=1e-6)}")
+```
+
+### Comparing Fixed vs. Learnable Scaling
+
+```python
+import torch
+from RoSE import RotarySpatialEmbedding
+
+# Create embeddings with and without learnable scaling
+fixed_embedding = RotarySpatialEmbedding(
+    feature_dims=128, num_heads=8, spatial_dims=2,
+    learnable_scale=False  # Traditional fixed scaling
+)
+
+adaptive_embedding = RotarySpatialEmbedding(
+    feature_dims=128, num_heads=8, spatial_dims=2,
+    learnable_scale=True   # Learnable adaptive scaling
+)
+
+# Test with challenging multi-scale data
+x = torch.randn(2, 100, 128)
+fine_spacing = (0.1, 0.1)      # Very fine spatial resolution
+coarse_spacing = (10.0, 10.0)  # Very coarse spatial resolution
+grid_shape = (10, 10)
+
+# Fixed scaling may struggle with large scale differences
+fine_fixed = fixed_embedding(x, fine_spacing, grid_shape)
+coarse_fixed = fixed_embedding(x, coarse_spacing, grid_shape)
+
+# Adaptive scaling learns to handle both scales
+fine_adaptive = adaptive_embedding(x, fine_spacing, grid_shape)  
+coarse_adaptive = adaptive_embedding(x, coarse_spacing, grid_shape)
+
+print("Fixed scaling treats all scales the same")
+print("Adaptive scaling learns optimal transformation for each scale during training")
 ```
 
 ### Integration with Transformers
@@ -337,17 +512,17 @@ from RoSE import RotarySpatialEmbedding
 class SpatialTransformerBlock(nn.Module):
     """Transformer block with spatial awareness via RoSE."""
 
-    def __init__(self, dim, num_heads, spatial_dims=2):
+    def __init__(self, feature_dims, num_heads, spatial_dims=2):
         super().__init__()
         self.spatial_embedding = RotarySpatialEmbedding(
-            dim=dim,
+            feature_dims=feature_dims,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=True
         )
 
         self.attention = nn.MultiheadAttention(
-            embed_dim=dim,
+            embed_dim=feature_dims,
             num_heads=num_heads,
             batch_first=True
         )
@@ -376,7 +551,7 @@ class SpatialTransformerBlock(nn.Module):
         return x
 
 # Example usage
-transformer = SpatialTransformerBlock(dim=256, num_heads=8, spatial_dims=2)
+transformer = SpatialTransformerBlock(feature_dims=256, num_heads=8, spatial_dims=2)
 x = torch.randn(4, 100, 256)  # Batch of sequences
 result = transformer(x, spacing=(1.0, 1.0), grid_shape=(10, 10))
 print(f"Transformer output shape: {result.shape}")
@@ -389,6 +564,17 @@ print(f"Transformer output shape: {result.shape}")
 3. **Learnable Frequencies**: Set `learnable=True` for fine-tuning on your specific spatial domain
 4. **Frequency Scaling**: Use `"adaptive"` scaling for most applications, `"sqrt"` for simpler cases
 5. **Grid Shape**: Ensure your sequence length matches `prod(grid_shape)` for proper spatial mapping
+6. **Learnable Scaling**: Enable `learnable_scale=True` when working with:
+   - Multi-resolution or multi-scale data
+   - Unknown optimal spatial scaling
+   - Data with varying spatial characteristics
+   - Large differences in coordinate ranges
+7. **Log Scaling**: Use `log_scale=True` for:
+   - Geographic or astronomical data with large coordinate ranges
+   - Data where logarithmic relationships are expected
+   - When linear scaling proves insufficient
+   - Can be used with either learnable (`learnable_scale=True`) or fixed (`learnable_scale=False`) parameters
+8. **Performance**: Learnable scaling adds 4 parameters per spatial dimension but can significantly improve model performance on spatially diverse data
 
 ## License
 
