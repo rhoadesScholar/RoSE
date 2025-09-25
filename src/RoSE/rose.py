@@ -86,8 +86,8 @@ class RotarySpatialEmbedding(nn.Module):
                         rotations across large scale differences. When True, adds learnable
                         parameters a, b, c, d that transform spacing as:
                         scale = a * scale ** b + c * log(scale / d)
-        log_scale: Enable logarithmic scaling transformation. When True, applies log scaling
-                  either as learnable parameters (if learnable_scale=True) or fixed parameters
+        log_scale: Utilize logarithmic scaling transformation. When True, applies log scaling
+                  either by appropriately initializing learnable parameters (if learnable_scale=True) or fixed parameters
                   (if learnable_scale=False). Uses initialization: a=0, b=c=d=1 for log scaling,
                   or a=b=d=1, c=0 for identity/power scaling.
     """
