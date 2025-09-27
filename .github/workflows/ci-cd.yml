@@ -19,28 +19,28 @@ on:
 jobs:
   format:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-        
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: "3.x"
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install black isort flake8
-        
+
     - name: Lint with flake8
       run: |
         flake8 src tests
-        
+
     - name: Format with black
       run: |
         black src tests
-        
+
     - name: Import sort with isort
       run: |
         isort src tests
@@ -53,7 +53,7 @@ jobs:
       matrix:
         platform: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12"]
-        
+
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
@@ -74,7 +74,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
 
-  
+
   tag-release:
     name: Tag Release
     needs: test

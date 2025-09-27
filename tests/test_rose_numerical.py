@@ -667,7 +667,7 @@ class TestRotarySpatialEmbedding:
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=True,
-            log_scale=False,
+            initial_scaling=None,
         )
 
         assert torch.allclose(layer_default.scale_a, torch.ones(spatial_dims))
@@ -675,14 +675,14 @@ class TestRotarySpatialEmbedding:
         assert torch.allclose(layer_default.scale_c, torch.zeros(spatial_dims))
         assert torch.allclose(layer_default.scale_d, torch.ones(spatial_dims))
 
-        # Test log_scale mode parameters (a=0, b=c=d=1)
+        # Test initial_scaling="log" mode parameters (a=0, b=c=d=1)
         layer_log = RotarySpatialEmbedding(
             feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=True,
-            log_scale=True,
+            initial_scaling="log",
         )
 
         assert torch.allclose(layer_log.scale_a, torch.zeros(spatial_dims))
@@ -715,6 +715,67 @@ class TestRotarySpatialEmbedding:
         assert layer_default.scale_c.grad is not None
         assert layer_default.scale_d.grad is not None
 
+    def test_initial_scaling_modes(self):
+        """Test all initial_scaling mode parameter initialization."""
+        dim, num_heads, spatial_dims = 32, 4, 2
+
+        # Test "rope" mode parameters (a=b=c=0, d=1)
+        layer_rope = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+            initial_scaling="rope",
+        )
+
+        assert torch.allclose(layer_rope.scale_a, torch.zeros(spatial_dims))
+        assert torch.allclose(layer_rope.scale_b, torch.zeros(spatial_dims))
+        assert torch.allclose(layer_rope.scale_c, torch.zeros(spatial_dims))
+        assert torch.allclose(layer_rope.scale_d, torch.ones(spatial_dims))
+
+        # Test "identity" mode parameters (a=b=d=1, c=0)
+        layer_identity = RotarySpatialEmbedding(
+            feature_dims=dim,
+            num_heads=num_heads,
+            spatial_dims=spatial_dims,
+            learnable=False,
+            learnable_scale=True,
+            initial_scaling="identity",
+        )
+
+        assert torch.allclose(layer_identity.scale_a, torch.ones(spatial_dims))
+        assert torch.allclose(layer_identity.scale_b, torch.ones(spatial_dims))
+        assert torch.allclose(layer_identity.scale_c, torch.zeros(spatial_dims))
+        assert torch.allclose(layer_identity.scale_d, torch.ones(spatial_dims))
+
+        # Test "linear" and "power" modes (should be same as identity)
+        for mode in ["linear", "power"]:
+            layer = RotarySpatialEmbedding(
+                feature_dims=dim,
+                num_heads=num_heads,
+                spatial_dims=spatial_dims,
+                learnable=False,
+                learnable_scale=True,
+                initial_scaling=mode,
+            )
+
+            assert torch.allclose(layer.scale_a, torch.ones(spatial_dims))
+            assert torch.allclose(layer.scale_b, torch.ones(spatial_dims))
+            assert torch.allclose(layer.scale_c, torch.zeros(spatial_dims))
+            assert torch.allclose(layer.scale_d, torch.ones(spatial_dims))
+
+        # Test that different modes produce different outputs (except equivalent ones)
+        x = torch.randn(2, 9, dim)
+        spacing = (2.0, 3.0)
+        grid_shape = (3, 3)
+
+        output_log = layer_rope.forward(x, spacing, grid_shape, flatten=True)
+        output_identity = layer_identity.forward(x, spacing, grid_shape, flatten=True)
+
+        # RoPE mode should nullify scaling, so it should behave differently from identity
+        assert not torch.allclose(output_log, output_identity, atol=1e-6)
+
     def test_scaling_equation_mathematical_properties(self):
         """Test mathematical properties of the new scaling equation."""
         dim, num_heads, spatial_dims = 32, 4, 2
@@ -726,7 +787,7 @@ class TestRotarySpatialEmbedding:
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=True,
-            log_scale=False,
+            initial_scaling=None,
         )
 
         # With default parameters (a=b=d=1, c=0), the equation becomes:
@@ -737,14 +798,14 @@ class TestRotarySpatialEmbedding:
 
         output_default = layer_default(x, spacing, grid_shape, flatten=True)
 
-        # Test log_scale mode gives different behavior
+        # Test initial_scaling="log" mode gives different behavior
         layer_log = RotarySpatialEmbedding(
             feature_dims=dim,
             num_heads=num_heads,
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=True,
-            log_scale=True,
+            initial_scaling="log",
         )
 
         # With log parameters (a=0, b=c=d=1), the equation becomes:
@@ -761,8 +822,8 @@ class TestRotarySpatialEmbedding:
         assert torch.allclose(output_default, output_default2)
         assert torch.allclose(output_log, output_log2)
 
-    def test_log_scale_without_learnable(self):
-        """Test that log_scale=True works correctly even when learnable_scale=False."""
+    def test_initial_scaling_without_learnable(self):
+        """Test that initial_scaling='log' works correctly even when learnable_scale=False."""
         dim, num_heads, spatial_dims = 32, 4, 2
 
         # Test fixed log scaling (non-learnable)
@@ -772,7 +833,7 @@ class TestRotarySpatialEmbedding:
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=False,  # Not learnable
-            log_scale=True,  # But still apply log scaling
+            initial_scaling="log",  # But still apply log scaling
         )
 
         # Test normal fixed scaling for comparison
@@ -782,7 +843,7 @@ class TestRotarySpatialEmbedding:
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=False,
-            log_scale=False,
+            initial_scaling=None,
         )
 
         # Check that scale parameters exist and have correct values for fixed log scaling
@@ -838,7 +899,7 @@ class TestRotarySpatialEmbedding:
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=True,
-            log_scale=True,
+            initial_scaling="log",
         )
 
         output_learnable_log = layer_learnable_log(x, spacing, grid_shape, flatten=True)
@@ -857,7 +918,7 @@ class TestRotarySpatialEmbedding:
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=False,
-            log_scale=False,
+            initial_scaling=None,
         )
 
         layer_learnable = RotarySpatialEmbedding(
@@ -866,7 +927,7 @@ class TestRotarySpatialEmbedding:
             spatial_dims=spatial_dims,
             learnable=False,
             learnable_scale=True,
-            log_scale=False,
+            initial_scaling=None,
         )
 
         x = torch.randn(2, 9, dim)

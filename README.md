@@ -212,11 +212,12 @@ x_embedded = embedding(x, spacing, grid_shape)  # Shape: (batch_size, seq_len, 1
   - When `True`, adds learnable parameters that transform spatial coordinates
   - Uses equation: `scale = a * scale ** b + c * log(scale / d)`
   - Helps handle rotations across different spatial scales automatically
-- **`log_scale`**: Enable logarithmic scaling transformation (default: False)
+- **`initial_scaling`**: Initial scaling transformation mode (default: None)
   - Works with both `learnable_scale=True` (learnable parameters) and `learnable_scale=False` (fixed parameters)
-  - When `True`: initializes for pure log scaling (`a=0, b=c=d=1`)
-  - When `False`: initializes for identity transform (`a=b=d=1, c=0`)
-  - Useful for data with large coordinate ranges or logarithmic relationships
+  - `"log"`: Initialize for pure logarithmic scaling (`a=0, b=c=d=1`)
+  - `"rope"`: Initialize to nullify scaling for standard RoPE behavior (`a=b=c=0, d=1`)
+  - `"identity"`, `"linear"`, `"power"`, or `None`: Initialize for identity/power scaling (`a=b=d=1, c=0`)
+  - Useful for data with large coordinate ranges, standard RoPE compatibility, or specific scaling relationships
 
 ## Advanced Examples
 
@@ -354,7 +355,7 @@ def create_adaptive_embedding():
         spatial_dims=3,
         learnable=True,
         learnable_scale=True,  # Enable learnable spatial scaling
-        log_scale=False,       # Use default initialization (identity transform)
+        initial_scaling=None,  # Use default initialization (identity transform)
         frequency_scaling="adaptive"
     )
 
@@ -396,7 +397,7 @@ geo_embedding = RotarySpatialEmbedding(
     spatial_dims=2,
     learnable=True,
     learnable_scale=True,  # Enable learnable scaling
-    log_scale=True,        # Initialize for logarithmic scaling
+    initial_scaling="log", # Initialize for logarithmic scaling
     frequency_scaling="adaptive"
 )
 
@@ -408,7 +409,7 @@ features = torch.randn(batch_size, num_locations, 256)
 grid_shape = (50, 50)
 spacing = (1000.0, 1000.0)  # 1km spacing
 
-# The log_scale initialization helps handle large coordinate values
+# The log initialization helps handle large coordinate values
 result = geo_embedding(features, spacing, grid_shape)
 
 print("Log-scale initialization parameters:")
@@ -434,7 +435,7 @@ fixed_log_embedding = RotarySpatialEmbedding(
     spatial_dims=2,
     learnable=False,
     learnable_scale=False,  # Fixed (non-learnable) parameters
-    log_scale=True,         # But still apply log scaling transformation
+    initial_scaling="log", # But still apply log scaling transformation
     frequency_scaling="adaptive"
 )
 
@@ -458,13 +459,50 @@ print(f"Output shape: {result.shape}")
 # Compare with normal fixed scaling
 normal_embedding = RotarySpatialEmbedding(
     feature_dims=128, num_heads=8, spatial_dims=2,
-    learnable_scale=False, log_scale=False
+    learnable_scale=False, initial_scaling=None
 )
 
 normal_result = normal_embedding(features, spacing, grid_shape)
 
 # Results should be different due to log scaling
 print(f"Results differ: {not torch.allclose(result, normal_result, atol=1e-6)}")
+```
+
+### Standard RoPE Compatibility Mode
+
+For compatibility with standard RoPE implementations or when you want to disable spatial scaling entirely:
+
+```python
+import torch
+from RoSE import RotarySpatialEmbedding
+
+# RoPE compatibility mode - nullifies all spatial scaling
+rope_embedding = RotarySpatialEmbedding(
+    feature_dims=128,
+    num_heads=8,
+    spatial_dims=2,
+    learnable=True,
+    learnable_scale=True,
+    initial_scaling="rope",  # Nullify scaling to reproduce standard RoPE
+    frequency_scaling="sqrt"
+)
+
+# The scaling equation becomes: scale = 0 * scale^0 + 0 * log(scale/1) = 0
+# This effectively disables spatial scaling, making it behave like standard RoPE
+
+batch_size, seq_len = 2, 100
+features = torch.randn(batch_size, seq_len, 128)
+grid_shape = (10, 10)
+spacing = (1.0, 1.0)
+
+result = rope_embedding(features, spacing, grid_shape)
+
+print(f"RoPE mode scaling parameters:")
+print(f"a={rope_embedding.scale_a.data} (should be 0)")
+print(f"b={rope_embedding.scale_b.data} (should be 0)")
+print(f"c={rope_embedding.scale_c.data} (should be 0)")
+print(f"d={rope_embedding.scale_d.data} (should be 1)")
+print("Spatial scaling is effectively disabled")
 ```
 
 ### Comparing Fixed vs. Learnable Scaling
@@ -495,7 +533,7 @@ fine_fixed = fixed_embedding(x, fine_spacing, grid_shape)
 coarse_fixed = fixed_embedding(x, coarse_spacing, grid_shape)
 
 # Adaptive scaling learns to handle both scales
-fine_adaptive = adaptive_embedding(x, fine_spacing, grid_shape)  
+fine_adaptive = adaptive_embedding(x, fine_spacing, grid_shape)
 coarse_adaptive = adaptive_embedding(x, coarse_spacing, grid_shape)
 
 print("Fixed scaling treats all scales the same")
@@ -569,10 +607,11 @@ print(f"Transformer output shape: {result.shape}")
    - Unknown optimal spatial scaling
    - Data with varying spatial characteristics
    - Large differences in coordinate ranges
-7. **Log Scaling**: Use `log_scale=True` for:
-   - Geographic or astronomical data with large coordinate ranges
-   - Data where logarithmic relationships are expected
-   - When linear scaling proves insufficient
+7. **Initial Scaling**: Choose the appropriate mode:
+   - `initial_scaling="log"` for geographic or astronomical data with large coordinate ranges
+   - `initial_scaling="rope"` to reproduce standard RoPE behavior (nullifies spatial scaling)
+   - `initial_scaling="identity"` or `None` for general-purpose identity/power scaling
+   - `initial_scaling="linear"` or `"power"` for identity/power scaling (same as identity)
    - Can be used with either learnable (`learnable_scale=True`) or fixed (`learnable_scale=False`) parameters
 8. **Performance**: Learnable scaling adds 4 parameters per spatial dimension but can significantly improve model performance on spatially diverse data
 

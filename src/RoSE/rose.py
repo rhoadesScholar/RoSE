@@ -86,10 +86,11 @@ class RotarySpatialEmbedding(nn.Module):
                         rotations across large scale differences. When True, adds learnable
                         parameters a, b, c, d that transform spacing as:
                         scale = a * scale ** b + c * log(scale / d)
-        log_scale: Utilize logarithmic scaling transformation. When True, applies log scaling
-                  either by appropriately initializing learnable parameters (if learnable_scale=True) or fixed parameters
-                  (if learnable_scale=False). Uses initialization: a=0, b=c=d=1 for log scaling,
-                  or a=b=d=1, c=0 for identity/power scaling.
+        initial_scaling: Initial scaling transformation mode. Options:
+                        - "log": Initialize for logarithmic scaling (a=0, b=c=d=1)
+                        - "rope": Initialize for standard RoPE behavior (a=b=c=0, d=1)
+                        - "identity", "linear", "power", or None: Initialize for identity/power scaling (a=b=d=1, c=0)
+                        Works with both learnable_scale=True (learnable parameters) and learnable_scale=False (fixed parameters).
     """
 
     def __init__(
@@ -103,7 +104,7 @@ class RotarySpatialEmbedding(nn.Module):
         frequency_scaling: str = "sqrt",
         rotary_ratio: float = 1.0,
         learnable_scale: bool = False,
-        log_scale: bool = False,
+        initial_scaling: Optional[str] = None,
     ):
         super().__init__()
         self._validate_parameters(feature_dims, num_heads, rotary_ratio)
@@ -114,7 +115,7 @@ class RotarySpatialEmbedding(nn.Module):
             rotary_ratio,
             learnable,
             learnable_scale,
-            log_scale,
+            initial_scaling,
         )
 
         if self.rotary_dim > 0:
@@ -122,7 +123,7 @@ class RotarySpatialEmbedding(nn.Module):
                 base_theta, frequency_scaling, learnable, init_jitter_std
             )
 
-        self._initialize_scale_parameters(learnable_scale, log_scale)
+        self._initialize_scale_parameters(learnable_scale, initial_scaling)
 
     def _validate_parameters(
         self, feature_dims: int, num_heads: int, rotary_ratio: float
@@ -142,7 +143,7 @@ class RotarySpatialEmbedding(nn.Module):
         rotary_ratio: float,
         learnable: bool,
         learnable_scale: bool,
-        log_scale: bool,
+        initial_scaling: Optional[str],
     ):
         """Initialize basic attributes and calculate dimensions."""
         self.feature_dims = feature_dims
@@ -152,7 +153,7 @@ class RotarySpatialEmbedding(nn.Module):
         self.rotary_ratio = rotary_ratio
         self.learnable = learnable
         self.learnable_scale = learnable_scale
-        self.log_scale = log_scale
+        self.initial_scaling = initial_scaling
 
         # Calculate dimensions for rotary embedding
         self.rotary_dim = int(self.feature_dims * rotary_ratio)
@@ -211,18 +212,28 @@ class RotarySpatialEmbedding(nn.Module):
         else:
             self.register_buffer("freqs", freqs, persistent=False)
 
-    def _get_scale_init_values(self, log_scale: bool) -> tuple[torch.Tensor, ...]:
+    def _get_scale_init_values(
+        self, initial_scaling: Optional[str]
+    ) -> tuple[torch.Tensor, ...]:
         """Get initial values for scale parameters."""
-        if log_scale:
-            # log_scale mode: b=c=d=1, a=0
+        if initial_scaling == "log":
+            # log mode: a=0, b=c=d=1 (pure logarithmic scaling)
             return (
                 torch.zeros(self.spatial_dims),  # scale_a
                 torch.ones(self.spatial_dims),  # scale_b
                 torch.ones(self.spatial_dims),  # scale_c
                 torch.ones(self.spatial_dims),  # scale_d
             )
+        elif initial_scaling == "rope":
+            # rope mode: a=b=c=0, d=1 (nullify scaling to reproduce normal RoPE)
+            return (
+                torch.zeros(self.spatial_dims),  # scale_a
+                torch.zeros(self.spatial_dims),  # scale_b
+                torch.zeros(self.spatial_dims),  # scale_c
+                torch.ones(self.spatial_dims),  # scale_d
+            )
         else:
-            # Default mode: a=b=d=1, c=0 (identity transformation)
+            # Default mode (None, "identity", "linear", "power"): a=b=d=1, c=0 (identity transformation)
             return (
                 torch.ones(self.spatial_dims),  # scale_a
                 torch.ones(self.spatial_dims),  # scale_b
@@ -230,9 +241,11 @@ class RotarySpatialEmbedding(nn.Module):
                 torch.ones(self.spatial_dims),  # scale_d
             )
 
-    def _initialize_scale_parameters(self, learnable_scale: bool, log_scale: bool):
+    def _initialize_scale_parameters(
+        self, learnable_scale: bool, initial_scaling: Optional[str]
+    ):
         """Initialize spatial scale parameters."""
-        if not (learnable_scale or log_scale):
+        if not (learnable_scale or initial_scaling):
             return
 
         (
@@ -240,7 +253,7 @@ class RotarySpatialEmbedding(nn.Module):
             scale_b_init,
             scale_c_init,
             scale_d_init,
-        ) = self._get_scale_init_values(log_scale)
+        ) = self._get_scale_init_values(initial_scaling)
 
         if learnable_scale:
             # Create learnable parameters
@@ -337,7 +350,7 @@ class RotarySpatialEmbedding(nn.Module):
         pos = _init_p_nd(grid_shape, spacing=spacing, dtype=x.dtype, device=x.device)
 
         # Apply scaling to the position tensor if enabled
-        if self.learnable_scale or self.log_scale:
+        if self.learnable_scale or self.initial_scaling:
             # Convert spacing to tensor once with consistent device/dtype
             spacing_tensor = torch.tensor(spacing, device=x.device, dtype=x.dtype)
 
@@ -463,7 +476,7 @@ class RoSEMultiHeadCrossAttention(nn.Module):
         frequency_scaling: Frequency scaling method ("sqrt", "linear", etc.)
         learnable_scale: Whether to enable learnable scaling of spatial scale to better handle
                         rotations across large scale differences.
-        log_scale: When True and learnable_scale=True, initializes parameters for log-only scaling.
+        initial_scaling: Initial scaling transformation mode ("log", "rope", "identity", "linear", "power", or None).
     """
 
     def __init__(
@@ -477,7 +490,7 @@ class RoSEMultiHeadCrossAttention(nn.Module):
         rotary_ratio: float = 1.0,
         frequency_scaling: str = "sqrt",
         learnable_scale: bool = False,
-        log_scale: bool = False,
+        initial_scaling: Optional[str] = None,
     ):
         super().__init__()
         assert feature_dims % num_heads == 0, "dim must be divisible by num_heads"
@@ -499,7 +512,7 @@ class RoSEMultiHeadCrossAttention(nn.Module):
             "rotary_ratio": rotary_ratio,
             "frequency_scaling": frequency_scaling,
             "learnable_scale": learnable_scale,
-            "log_scale": log_scale,
+            "initial_scaling": initial_scaling,
         }
         self.rose = RotarySpatialEmbedding(**pe_kwargs)
 
@@ -553,7 +566,7 @@ class MultiRes_RoSE_Block(nn.Module):
         rotary_ratio: float = 1.0,
         frequency_scaling: str = "sqrt",
         learnable_scale: bool = False,
-        log_scale: bool = False,
+        initial_scaling: Optional[str] = None,
         mlp_ratio: float = 4.0,
         mlp_dropout: float = 0.0,
         mlp_bias: bool = True,
@@ -594,7 +607,7 @@ class MultiRes_RoSE_Block(nn.Module):
             rotary_ratio=rotary_ratio,
             frequency_scaling=frequency_scaling,
             learnable_scale=learnable_scale,
-            log_scale=log_scale,
+            initial_scaling=initial_scaling,
         )
 
         # Attention components
