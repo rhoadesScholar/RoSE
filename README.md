@@ -5,7 +5,7 @@
 ![GitHub - License](https://img.shields.io/github/license/rhoadesScholar/RoSE)
 [![CI/CD Pipeline](https://github.com/rhoadesScholar/RoSE/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/rhoadesScholar/RoSE/actions/workflows/ci-cd.yml)
 [![codecov](https://codecov.io/github/rhoadesScholar/RoSE/graph/badge.svg?token=PPT4ZNZZCJ)](https://codecov.io/github/rhoadesScholar/RoSE)
-![PyPI - Version](https://img.shields.io/pypi/v/rotary-spatial-embeddings)
+[![PyPI - Version](https://img.shields.io/pypi/v/rotary-spatial-embeddings)](https://pypi.org/project/rotary-spatial-embeddings/)
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/rotary-spatial-embeddings)
 
 
