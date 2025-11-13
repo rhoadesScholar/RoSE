@@ -6,6 +6,7 @@ concurrency:
 
 permissions:
   contents: write
+  pull-requests: write
 
 on:
   push:
@@ -19,9 +20,13 @@ on:
 jobs:
   format:
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -45,10 +50,31 @@ jobs:
       run: |
         isort src tests
 
+    - name: Check for formatting changes
+      id: check_changes
+      run: |
+        if [[ -n $(git status --porcelain) ]]; then
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "Formatting changes detected"
+        else
+          echo "has_changes=false" >> $GITHUB_OUTPUT
+          echo "No formatting changes"
+        fi
+
+    - name: Commit formatting changes
+      if: steps.check_changes.outputs.has_changes == 'true'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add -A
+        git commit -m "chore: auto-format code [skip ci]"
+        git push
+
   test:
     name: ${{ matrix.platform }} (${{ matrix.python-version }})
     runs-on: ${{ matrix.platform }}
     needs: format
+    if: always() && (needs.format.result == 'success' || needs.format.result == 'skipped')
     strategy:
       matrix:
         platform: [ubuntu-latest, windows-latest, macos-latest]
@@ -56,6 +82,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Pull latest changes if on main
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: git pull origin main
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -86,24 +117,63 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Get version from CITATION.cff
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+
+
+      - name: Generate new version and update CITATION.cff
         id: get_tag
         run: |
-          tag=$(grep '^version:' CITATION.cff | sed 's/version: //')
+          # Generate PEP440 compliant date-based version tag
+          tag=$(python -c "from datetime import datetime, timezone; now = datetime.now(timezone.utc); print(f'{now.year}.{now.month:02d}.{now.day:02d}.{now.hour:02d}{now.minute:02d}')")
           echo "tag=$tag" >> $GITHUB_OUTPUT
-          echo "Found version: $tag"
+          echo "Generated version: $tag"
+          
+          # Update version in CITATION.cff
+          sed -i "s/^version: .*/version: $tag/" CITATION.cff
+          
+          # Update date-released in CITATION.cff
+          today=$(date -u +%Y-%m-%d)
+          sed -i "s/^date-released: .*/date-released: $today/" CITATION.cff
+          
+          echo "Updated CITATION.cff with version $tag and date $today"
+
       - name: Check if tag already exists
         run: |
-          if git rev-parse "${{ steps.get_tag.outputs.tag }}" >/dev/null 2>&1; then
+          if [[ -n $(git tag -l "${{ steps.get_tag.outputs.tag }}") ]]; then
             echo "Tag ${{ steps.get_tag.outputs.tag }} already exists, skipping release"
             exit 1
           fi
-      - name: Create and push tag
+
+      - name: Create and push tag (before version commit)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.get_tag.outputs.tag }}
-          git push origin ${{ steps.get_tag.outputs.tag }}
+          if git rev-parse "${{ steps.get_tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.get_tag.outputs.tag }} already exists, skipping tag creation and push"
+          else
+            # Tag the current commit (the actual code) before we add the version bump commit
+            git tag ${{ steps.get_tag.outputs.tag }}
+            git push origin ${{ steps.get_tag.outputs.tag }}
+          fi
+
+      - name: Commit version update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [[ -n $(git status --porcelain) ]]; then
+            git add CITATION.cff
+            git commit -m "chore: bump version to ${{ steps.get_tag.outputs.tag }} [skip ci]"
+            git push origin main
+          else
+            echo "No changes to commit"
+          fi
+
       - name: Create GitHub Release with Notes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
