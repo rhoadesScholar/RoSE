@@ -83,7 +83,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: main
       - name: Pull latest changes if on main
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: git pull origin main
@@ -124,15 +124,13 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Pull latest changes (including any formatting commits)
-        run: |
-          git pull origin main
+
 
       - name: Generate new version and update CITATION.cff
         id: get_tag
         run: |
           # Generate PEP440 compliant date-based version tag
-          tag=$(python -c "from datetime import datetime, timezone; now = datetime.now(timezone.utc); print(f'{now.year}.{now.month}.{now.day}.{now.hour}{now.minute:02d}')")
+          tag=$(python -c "from datetime import datetime, timezone; now = datetime.now(timezone.utc); print(f'{now.year}.{now.month:02d}.{now.day:02d}.{now.hour:02d}{now.minute:02d}')")
           echo "tag=$tag" >> $GITHUB_OUTPUT
           echo "Generated version: $tag"
           
@@ -147,9 +145,21 @@ jobs:
 
       - name: Check if tag already exists
         run: |
-          if git rev-parse "${{ steps.get_tag.outputs.tag }}" >/dev/null 2>&1; then
+          if [[ -n $(git tag -l "${{ steps.get_tag.outputs.tag }}") ]]; then
             echo "Tag ${{ steps.get_tag.outputs.tag }} already exists, skipping release"
             exit 1
+          fi
+
+      - name: Create and push tag (before version commit)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "${{ steps.get_tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.get_tag.outputs.tag }} already exists, skipping tag creation and push"
+          else
+            # Tag the current commit (the actual code) before we add the version bump commit
+            git tag ${{ steps.get_tag.outputs.tag }}
+            git push origin ${{ steps.get_tag.outputs.tag }}
           fi
 
       - name: Commit version update
@@ -163,13 +173,6 @@ jobs:
           else
             echo "No changes to commit"
           fi
-
-      - name: Create and push tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.get_tag.outputs.tag }}
-          git push origin ${{ steps.get_tag.outputs.tag }}
 
       - name: Create GitHub Release with Notes
         env:
